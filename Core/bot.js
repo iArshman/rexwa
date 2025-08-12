@@ -1,4 +1,3 @@
-
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, getAggregateVotesInPollMessage, isJidNewsletter, delay, proto, encodeWAM, BinaryInfo } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
@@ -358,11 +357,7 @@ class HyperWaBot {
         
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
                               `🔥 *HyperWa Features Active:*\n` +
-                              `• 📱 Modular Architecture\n` +
-                              `• 🗄️ Default Baileys Store: ✅\n` +
-                              `• 🔐 Auth Method: ${authMethod}\n` +
                               `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
-                              `• 🔧 Custom Modules: ${config.get('features.customModules') ? '✅' : '❌'}\n` +
                               `• 🔄 Auto Replies: ${this.doReplies ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
