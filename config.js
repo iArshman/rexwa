@@ -6,12 +6,13 @@ class Config {
                 company: 'Dawium Technologies',
                 prefix: '.',
                 version: '2.0.0',
-                owner: '923417033005@s.whatsapp.net', // Include full JID
+                owner: '92300000000@s.whatsapp.net', // Include full JID
                 clearAuthOnStart: false
             },
 
             auth: {
-                useMongoAuth: true // Set to false for file-based auth
+                useMongoAuth: true, // Set to false for file-based auth
+                clearAuthOnStart: false
             },
 
             admins: [
@@ -23,28 +24,33 @@ class Config {
             features: {
                 mode: 'public',                   // 'public' or 'private'
                 customModules: true,              // Enable custom modules
-                rateLimiting: true,               // Enable rate limiting
-                telegramBridge: true,             // Sync with Telegram
-                respondToUnknownCommands: false, // Respond to unknown commands
-                sendPermissionError: false        // Send error for disallowed commands
+                rateLimiting: true,                // Disable rate limiting for better performance
+                autoReply: false,                  // Auto reply to messages
+                typingIndicators: true,            // Show typing indicators
+                autoReadMessages: true,            // Auto read messages
+                autoViewStatus: false,             // Auto view status updates
+                telegramBridge: true,              // Sync with Telegram
+                respondToUnknownCommands: false,   // Respond to unknown commands
+                sendPermissionError: false         // Send error for disallowed commands
             },
 
             mongo: {
-                uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
-                dbName: 'HyperWA'
+                uri: 'mongodb+srv://irexaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxexDB',
+                dbName: 'RexWA'
             },
 
             telegram: {
                 enabled: true,
-                botToken: '7822179405:AAHI1zW7qkXZsqOtyu9NeRdmquwbx1aZu0o',
+                botToken: '9999999999999999999999999999',
                 botPassword: '1122',
-                chatId: '-1002783833178',
+                chatId: '-++++++++++',
                 logChannel: '-100000000000',
                 features: {
                     topics: true,
                     mediaSync: true,
                     profilePicSync: false,
                     callLogs: true,
+                    readReceipts: true,               // Send read receipts after sync
                     statusSync: true,
                     biDirectional: true,
                     welcomeMessage: false,         // Message on topic creation
@@ -53,6 +59,13 @@ class Config {
                     readReceipts: false,
                     animatedStickers: true
                 }
+            },
+            
+            // Assistant module configuration
+            assistant: {
+                enabled: false,                   // Enable AI assistant
+                learningMode: true,              // Allow learning new patterns
+                suggestionThreshold: 0.6         // Confidence threshold for suggestions
             },
 
             help: {
@@ -73,6 +86,27 @@ class Config {
                 saveToFile: true,     // Write logs to file
                 maxFileSize: '10MB',  // Max size per log file
                 maxFiles: 5           // Max number of rotated files
+            },
+            
+            // Store configuration for enhanced features
+            store: {
+                filePath: './whatsapp-store.json',
+                autoSaveInterval: 30000           // Save every 30 seconds
+            },
+            
+            // Security settings
+            security: {
+                blockedUsers: [],                 
+                maxFileSize: '10MB',  
+                maxFiles: 5           
+            },
+
+            // Messages configuration
+            messages: {
+                autoReplyText: 'Hello! This is an automated response. I\'ll get back to you soon.',
+                welcomeText: 'Welcome to the group!',
+                goodbyeText: 'Goodbye! Thanks for being part of our community.',
+                errorText: 'Something went wrong. Please try again later.'
             }
         };
 
