@@ -1,4 +1,3 @@
-
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, getAggregateVotesInPollMessage, isJidNewsletter, delay, proto, encodeWAM, BinaryInfo } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
