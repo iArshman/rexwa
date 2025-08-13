@@ -68,7 +68,7 @@ class InMemoryStore extends events.EventEmitter {
         /**
          * File path for persistence
          */
-        this.filePath = options.filePath || './store.json';
+        this.filePath = options.filePath || './auth_info/store.json';
         
         /**
          * Auto-save interval
