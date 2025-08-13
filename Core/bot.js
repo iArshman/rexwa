@@ -1,3 +1,4 @@
+
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, getAggregateVotesInPollMessage, isJidNewsletter, delay, proto, encodeWAM, BinaryInfo } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
@@ -11,13 +12,14 @@ const MessageHandler = require('./message-handler');
 const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
 const { useMongoAuthState } = require('../utils/mongoAuthState');
-
-
+const { makeInMemoryStore } = require('./store'); 
 const msgRetryCounterCache = new NodeCache();
 
 class HyperWaBot {
     constructor() {
         this.sock = null;
+        this.store = makeInMemoryStore({ logger: logger.child({ module: 'store' }) }); 
+        this.store.loadFromFile();
         this.authPath = './auth_info';
         this.messageHandler = new MessageHandler(this);
         this.telegramBridge = null;
@@ -26,8 +28,6 @@ class HyperWaBot {
         this.moduleLoader = new ModuleLoader(this);
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
-        
-        // Simple message store for getMessage implementation (like official example)
         this.messageStore = new Map();
         
         // Simple memory cleanup
@@ -70,7 +70,7 @@ class HyperWaBot {
                 this.telegramBridge = null;
             }
         }
-
+        await this.store.loadFromFile();
         await this.moduleLoader.loadModules();
         await this.startSock();
 
@@ -120,7 +120,15 @@ class HyperWaBot {
                 generateHighQualityLinkPreview: true,
                 getMessage: this.getMessage.bind(this),
                 browser: ['HyperWa', 'Chrome', '3.0'],
+                // Enable message history for better message retrieval
+                syncFullHistory: false,
+                markOnlineOnConnect: true,
+                // Add firewall bypass
+                firewall: false
             });
+
+            // Bind store to socket events
+            this.store.bind(this.sock.ev);
 
             // The process function lets you process all events that just occurred efficiently in a batch
             this.sock.ev.process(async (events) => {
@@ -304,6 +312,12 @@ class HyperWaBot {
             // Check if we have the message stored
             if (key.id && this.messageStore.has(key.id)) {
                 return this.messageStore.get(key.id);
+            }
+            
+            // Try to load from store
+            if (this.store) {
+                const msg = await this.store.loadMessage(key.remoteJid, key.id);
+                return msg?.message;
             }
             
             // Return undefined to let Baileys handle it naturally
