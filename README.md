@@ -38,7 +38,6 @@ Advanced WhatsApp Userbot with Telegram Bridge, Smart Command Processing, and Mo
 ### Auto Reactions
 Commands automatically get reactions:
 - ⏳ When command starts processing
-- ✅ When command completes successfully
 - ❌ When command fails
 - ❓ For unknown commands
 
@@ -48,8 +47,6 @@ Processing messages are automatically edited with results:
 2. Bot reacts with ⏳ and sends "Processing..." message
 3. Command executes
 4. Processing message gets edited with final result
-5. Bot reacts with ✅ or ❌
-
 
 ## 🔗 Telegram Bridge Features
 
@@ -117,7 +114,6 @@ Processing messages are automatically edited with results:
 ### Module Management
 - `.lm` - Load module (reply to .js file)
 - `.ulm <module>` - Unload module
-- `.rlm <module>` - Reload module
 - `.modules` - List all loaded modules
 
 ## 📦 Installation
@@ -164,9 +160,10 @@ features: {
     autoViewStatus: true,
     customModules: true,
     rateLimiting: true,
-    smartProcessing: true, // Enhanced command processing
-    autoReact: true, // Auto react to commands
-    editMessages: true // Edit processing messages
+    autoViewStatus: false,
+    telegramBridge: false, # this will enable disable telegrambridge feature
+    respondToUnknownCommands: false, # this will send error message to tell user you send wrong comand
+    sendPermissionError: false  # This will send error meessage to user to tell you're not allowed to use this command
 }
 ```
 
