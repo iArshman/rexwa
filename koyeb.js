@@ -5,16 +5,48 @@ import https from "https";
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-let REAL_URL = null;
+let REAL_URL = process.env.KOYEB_PUBLIC_URL || null;
 let BOT_HEALTHY = false;
 
-// Use env first
-if (process.env.KOYEB_PUBLIC_URL) REAL_URL = process.env.KOYEB_PUBLIC_URL;
+let localTimer = null;
+let externalTimer = null;
 
-// Disable all logging
-const log = () => {};
+// Start both pingers only when REAL_URL exists
+function enablePingersIfReady() {
+    if (!REAL_URL) return;
+    startLocalPinger();
+    startExternalPinger();
+}
 
-// Learn REAL public URL from proxy headers
+// Local pinger (only after REAL_URL is known)
+function startLocalPinger() {
+    if (localTimer) return;
+
+    const localURL = `http://127.0.0.1:${PORT}/health`;
+
+    localTimer = setInterval(() => {
+        http.get(localURL, res => res.resume());
+    }, 120000);
+}
+
+// External pinger (only after REAL_URL is known)
+function startExternalPinger() {
+    if (externalTimer) clearInterval(externalTimer);
+    if (!REAL_URL) return;
+
+    const url = REAL_URL + "/health";
+    const proto = REAL_URL.startsWith("https") ? https : http;
+
+    externalTimer = setInterval(() => {
+        try {
+            proto.get(url, res => {
+                res.on("data", () => {});
+            }).on("error", () => {});
+        } catch {}
+    }, 240000);
+}
+
+// Detect REAL_URL from Koyeb proxy headers
 app.use((req, res, next) => {
     const proto = req.headers["x-forwarded-proto"];
     const host = req.headers["x-forwarded-host"] || req.headers.host;
@@ -23,9 +55,10 @@ app.use((req, res, next) => {
         const newURL = `${proto}://${host}`;
         if (REAL_URL !== newURL) {
             REAL_URL = newURL;
-            restartExternalPinger();
+            enablePingersIfReady();
         }
     }
+
     next();
 });
 
@@ -40,6 +73,7 @@ app.get("/", (req, res) => {
         <html>
 <head>
     <title>HyperWa Bot</title>
+    <meta http-equiv="refresh" content="10">
     <style>
         body {
             margin: 0;
@@ -51,73 +85,59 @@ app.get("/", (req, res) => {
             align-items: center;
             height: 100vh;
         }
-
         .card {
             background: #181818;
             padding: 30px 40px;
             border-radius: 18px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.6);
             width: 420px;
             text-align: center;
         }
-
         h1 {
             margin-top: 0;
             margin-bottom: 20px;
             color: #00e676;
         }
-
         table {
             width: 100%;
             margin-top: 20px;
             border-collapse: collapse;
         }
-
         td {
             padding: 8px 0;
             border-bottom: 1px solid #333;
             font-size: 14px;
             color: #ddd;
         }
-
         .badge {
             padding: 4px 10px;
             border-radius: 6px;
             font-size: 12px;
             color: #fff;
         }
-
         .ok { background: #00c853; }
-        .init { background: #ffb300; }
     </style>
-
-    <meta http-equiv="refresh" content="10">
 </head>
 
 <body>
     <div class="card">
         <h1>HyperWa Bot</h1>
-
         <table>
             <tr>
                 <td>Status</td>
                 <td><span class="badge ok">Running</span></td>
             </tr>
-
             <tr>
                 <td>Uptime</td>
                 <td>${h}h ${m}m ${s}s</td>
             </tr>
-
         </table>
-        
     </div>
 </body>
 </html>
     `);
 });
 
-// Health
+// Health endpoint
 app.get("/health", (req, res) => {
     res.json({
         ok: true,
@@ -146,54 +166,22 @@ app.post("/bot-status", (req, res) => {
     res.json({ ok: true });
 });
 
-// Local ping
-let localTimer = null;
-
-function startLocalPinger() {
-    if (localTimer) clearInterval(localTimer);
-
-    const localURL = `http://127.0.0.1:${PORT}/health`;
-
-    localTimer = setInterval(() => {
-        http.get(localURL, res => res.resume());
-    }, 120000);
-}
-startLocalPinger();
-
-// External pinger
-let externalTimer = null;
-
-function restartExternalPinger() {
-    if (!REAL_URL) return;
-    if (externalTimer) clearInterval(externalTimer);
-
-    const url = REAL_URL + "/health";
-    const isHttps = REAL_URL.startsWith("https");
-    const proto = isHttps ? https : http;
-    
-    externalTimer = setInterval(() => {
-        proto.get(url, res => {
-            res.resume();
-        }).on("error", () => {});
-    }, 240000);
-}
-
-// Domain verification
+// Domain verification (silent)
 setInterval(() => {
     if (!REAL_URL) return;
 
     const checkURL = REAL_URL + "/health";
     const proto = REAL_URL.startsWith("https") ? https : http;
 
-    proto.request(checkURL, { method: "HEAD", timeout: 3000 }, (res) => {
-        res.resume();
-    }).on("error", () => {}).end();
+    proto.request(checkURL, { method: "HEAD", timeout: 3000 }, () => {})
+         .on("error", () => {})
+         .end();
 
 }, 600000);
 
-// Server start
+// Start server silently
 const server = app.listen(PORT, "0.0.0.0", () => {
-    if (REAL_URL) restartExternalPinger();
+    enablePingersIfReady();
 });
 
 // Safe exit
