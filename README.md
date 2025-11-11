@@ -102,6 +102,10 @@ A powerful, modular WhatsApp userbot built with Baileys, featuring Telegram inte
 ---
 ## Installation
 
+### Deploy to Koyeb
+
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=github.com/iArshman/HyperWA&branch=main&name=hyperwa-bot)
+
 ### Prerequisites
 - Node.js 18+ (Node 22 recommended)
 - MongoDB instance
