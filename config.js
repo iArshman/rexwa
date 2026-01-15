@@ -37,7 +37,7 @@ class Config {
             },
 
             telegram: {
-                enabled: false,
+                enabled: true,
                 botToken: '8433721002:AAGpZaGqzG2idUjJFKi4DNJVgnZzdtr-TkQ',
                 botPassword: '1122',
                 chatId: '-1002846269080',
