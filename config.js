@@ -6,7 +6,7 @@ class Config {
                 company: 'Dawium Technologies',
                 prefix: '.',
                 version: '3.0.0',
-                owner: '92307541232@s.whatsapp.net',
+                owner: '923075417411@s.whatsapp.net',
                 clearAuthOnStart: false
             },
 
@@ -32,13 +32,13 @@ class Config {
             },
 
             mongo: {
-                uri: 'mongodb+srv://%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%',
-                dbName: 'HyperWA'
+                uri: 'mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB',
+                dbName: 'RexWA'
             },
 
             telegram: {
                 enabled: false,
-                botToken: '8340169817:AAE3p5yc0%%%%%%%%%%%%%%%%%%%%%%',
+                botToken: '8433721002:AAGpZaGqzG2idUjJFKi4DNJVgnZzdtr-TkQ',
                 botPassword: '1122',
                 chatId: '-1002846269080',
                 logChannel: '-100000000000',
