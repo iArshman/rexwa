@@ -40,6 +40,12 @@ class TelegramCommands {
                 case '/clearfilters':
                     await this.handleClearFilters(msg.chat.id);
                     break;
+                case '/updatetopics': // 🆕 New Command Case
+                    await this.handleUpdateTopics(msg.chat.id);
+                    break;
+                    case '/getinfo': 
+                    await this.handleGetInfo(msg.chat.id, args);
+                    break;
                 default:
                     await this.handleMenu(msg.chat.id);
             }
@@ -52,7 +58,41 @@ class TelegramCommands {
             );
         }
     }
+async handleGetInfo(chatId, args) {
+        if (args.length < 1) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '❌ Usage: /getinfo <number>\nExample: /getinfo 1234567890',
+                { parse_mode: 'Markdown' });
+        }
 
+        const number = args[0].replace(/\D/g, '');
+
+        if (!/^\d{6,15}$/.test(number)) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '❌ Invalid phone number format.',
+                { parse_mode: 'Markdown' });
+        }
+
+        // Format as a JID (Jaber ID)
+        const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
+
+        try {
+            await this.bridge.telegramBot.sendMessage(chatId, `🔍 Fetching info for ${number}...`, { parse_mode: 'Markdown' });
+            
+            // This function will be created in bridge.js
+            const info = await this.bridge.getUserInfo(jid); 
+
+            // Convert the info object to a formatted JSON string
+            const infoString = JSON.stringify(info, null, 2);
+            const response = `\`\`\`json\n${infoString}\n\`\`\``;
+
+            await this.bridge.telegramBot.sendMessage(chatId, `📊 *Raw Info for ${number}*\n\n${response}`, { parse_mode: 'Markdown' });
+
+        } catch (error) {
+            logger.error(`❌ Error fetching info for ${jid}:`, error);
+            await this.bridge.telegramBot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
+        }
+    }
     async handleStart(chatId) {
         const statusText = `🤖 *WhatsApp-Telegram Bridge*\n\n` +
             `Status: ${this.bridge.telegramBot ? '✅ Ready' : '⏳ Initializing...'}\n` +
@@ -162,6 +202,21 @@ class TelegramCommands {
         await this.bridge.clearFilters();
         await this.bridge.telegramBot.sendMessage(chatId, '🧹 All filters cleared.', { parse_mode: 'Markdown' });
     }
+    
+    // 🆕 New Command Handler
+    async handleUpdateTopics(chatId) {
+        await this.bridge.telegramBot.sendMessage(chatId, '🔄 **Updating Telegram topic names...** This may take a moment.', { parse_mode: 'Markdown' });
+        try {
+            await this.bridge.updateTopicNames(); 
+
+            await this.bridge.telegramBot.sendMessage(chatId,
+                '✅ **Telegram topic names update complete.**',
+                { parse_mode: 'Markdown' });
+        } catch (error) {
+            logger.error(`❌ Error updating topic names:`, error);
+            await this.bridge.telegramBot.sendMessage(chatId, `❌ Failed to update topic names: ${error.message}`, { parse_mode: 'Markdown' });
+        }
+    }
 
     async handleMenu(chatId) {
         const message = `ℹ️ *Available Commands*\n\n` +
@@ -172,7 +227,9 @@ class TelegramCommands {
             `/searchcontact <name/phone> - Search contacts\n` +
             `/addfilter <word> - Block WA messages starting with it\n` +
             `/filters - Show current filters\n` +
-            `/clearfilters - Remove all filters`;
+            `/clearfilters - Remove all filters\n` +
+            `/updatetopics - Update Telegram topic names (Contacts/PNs)`; 
+            `/getinfo <number> - Fetch raw metadata for a user`;
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
 
@@ -186,7 +243,9 @@ class TelegramCommands {
                 { command: 'searchcontact', description: 'Search WhatsApp contacts' },
                 { command: 'addfilter', description: 'Add blocked word' },
                 { command: 'filters', description: 'Show blocked words' },
-                { command: 'clearfilters', description: 'Clear all filters' }
+                { command: 'clearfilters', description: 'Clear all filters' },
+                { command: 'updatetopics', description: 'Update Telegram topic names (Contacts/PNs)' },
+                { command: 'getinfo', description: 'Fetch raw metadata for a user' }
             ]);
             logger.info('✅ Telegram bot commands registered');
         } catch (error) {
