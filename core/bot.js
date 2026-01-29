@@ -13,14 +13,13 @@ import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
 import path from 'path';
 import NodeCache from '@cacheable/node-cache';
-import { makeInMemoryStore } from './store.js';
+import { makeInMemoryStore } from '../utils/store.js';
 import config from '../config.js';
 import logger from './logger.js';
 import MessageHandler from './message-handler.js';
 import { connectDb } from '../utils/db.js';
 import ModuleLoader from './module-loader.js';
 import { useMongoAuthState } from '../utils/mongoAuthState.js';
-import ContactResolver from '../utils/contact-resolver.js'; 
 
 class HyperWaBot {
     constructor() {
@@ -34,7 +33,6 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
-        this.contactResolver = new ContactResolver(this);
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
         logger: logger.child({ module: 'store' }),
@@ -42,59 +40,54 @@ class HyperWaBot {
         autoSaveInterval: 30000
     });
     
-    // Load existing data
     this.store.loadFromFile();
-    
-    // ✅ Proper cache setup
+
     this.msgRetryCounterCache = new NodeCache();
     this.onDemandMap = new Map();
-    
-    // Memory cleanup
+
     setInterval(() => {
         if (this.onDemandMap.size > 100) {
             this.onDemandMap.clear();
         }
     }, 300000);
     }
+  async initialize() {
+    logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
 
-    async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
-
-        try {
-            this.db = await connectDb();
-            logger.info('✅ Database connected successfully!');
-        } catch (error) {
-            logger.error('❌ Failed to connect to database:', error);
-            process.exit(1);
-        }
-
-        if (config.get('telegram.enabled')) {
-            try {
-                const { default: TelegramBridge } = await import('../telegram/bridge.js');
-                this.telegramBridge = new TelegramBridge(this);
-                await this.telegramBridge.initialize();
-                logger.info('✅ Telegram bridge initialized');
-
-                try {
-                    await this.telegramBridge.sendStartMessage();
-                } catch (err) {
-                    logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
-                }
-            } catch (error) {
-                logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
-                this.telegramBridge = null;
-            }
-        }
-
-        await this.moduleLoader.loadModules();
-        await this.startWhatsApp();
-
-        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
+    try {
+        this.db = await connectDb();
+        // removed DB connected log
+    } catch (error) {
+        logger.error('❌ Failed to connect to database:', error);
+        process.exit(1);
     }
+
+    if (config.get('telegram.enabled')) {
+        try {
+            const { default: TelegramBridge } = await import('../telegram/bridge.js');
+            this.telegramBridge = new TelegramBridge(this);
+            await this.telegramBridge.initialize();
+            logger.info('✅ Telegram bridge initialized');
+
+            try {
+                await this.telegramBridge.sendStartMessage();
+            } catch (err) {
+                // removed warn log
+            }
+        } catch (error) {
+            logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
+            this.telegramBridge = null;
+        }
+    }
+
+    await this.moduleLoader.loadModules();
+    await this.startWhatsApp();
+
+    logger.info('✅ HyperWa Userbotinitialized successfully!');
+}
 
     async startWhatsApp() {
         let state, saveCreds;
-
         // Clean up existing socket if present
         if (this.sock) {
             logger.info('🧹 Cleaning up existing WhatsApp socket');
@@ -105,11 +98,17 @@ class HyperWaBot {
 
         // Choose auth method based on configuration
         if (this.useMongoAuth) {
-            ({ state, saveCreds } = await useMongoAuthState());
             logger.info('🔧 Using MongoDB auth state...');
+            try {
+                ({ state, saveCreds } = await useMongoAuthState());
+            } catch (error) {
+                logger.error('❌ Failed to initialize MongoDB auth state:', error);
+                logger.info('🔄 Falling back to file-based auth...');
+                ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+            }
         } else {
-            ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
             logger.info('🔧 Using file-based auth state...');
+            ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
         }
 
         const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -131,8 +130,7 @@ class HyperWaBot {
         firewall: true,
         printQRInTerminal: false
     });
-
-    // ✅ CRITICAL: Bind store to socket events
+            
     this.store.bind(this.sock.ev);
     logger.info('🔗 Store bound to socket');
             const connectionPromise = new Promise((resolve, reject) => {
@@ -163,22 +161,17 @@ class HyperWaBot {
         }
     }
 
-    // Enhanced getMessage with store lookup
     async getMessage(key) {
     try {
         if (!key?.remoteJid || !key?.id) {
             return undefined;
         }
-
-        //  Try to get from store first
         const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
         if (storedMessage?.message) {
             logger.debug(`📨 Retrieved from store: ${key.id}`);
             return storedMessage.message;
         }
 
-        //  Return undefined (Baileys will handle retry)
-        // Never return fake messages - causes decryption issues
         return undefined;
         
     } catch (error) {
@@ -186,8 +179,6 @@ class HyperWaBot {
         return undefined;
     }
 }
-
-
 
 setupEnhancedEventHandlers(saveCreds) {
     this.sock.ev.process(async (events) => {
@@ -242,7 +233,6 @@ setupEnhancedEventHandlers(saveCreds) {
                     }
                 }
 
-                // Final store save
                 this.store.saveToFile();
                 process.exit(1);
             }
@@ -326,11 +316,8 @@ setupEnhancedEventHandlers(saveCreds) {
         if (!owner) return;
 
         const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
-        const storeStats = this.getStoreStats();
         
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
-                              `🔥 *HyperWa Features Active:*\n` +
-                              `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
         try {
@@ -365,7 +352,6 @@ setupEnhancedEventHandlers(saveCreds) {
         logger.info('🛑 Shutting down HyperWa Userbot...');
         this.isShuttingDown = true;
 
-        // Cleanup store
         this.store.cleanup();
 
         if (this.telegramBridge) {
