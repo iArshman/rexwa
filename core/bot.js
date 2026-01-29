@@ -54,40 +54,7 @@ class HyperWaBot {
         if (this.onDemandMap.size > 100) {
             this.onDemandMap.clear();
         }
-    }, 300000); // 5 minutes
-
-
-        // Store event listeners for advanced features
-        this.setupStoreEventListeners();
-    }
-
-    setupStoreEventListeners() {
-        // Monitor store events for analytics and features
-        this.store.on('messages.upsert', (data) => {
-            logger.debug(`📝 Store: ${data.messages.length} messages cached`);
-        });
-
-        this.store.on('contacts.upsert', (contacts) => {
-            logger.debug(`👥 Store: ${contacts.length} contacts cached`);
-        });
-
-        this.store.on('chats.upsert', (chats) => {
-            logger.debug(`💬 Store: ${chats.length} chats cached`);
-        });
-
-    }
-
-    getStoreStats() {
-        const chatCount = Object.keys(this.store.chats).length;
-        const contactCount = Object.keys(this.store.contacts).length;
-        const messageCount = Object.values(this.store.messages)
-            .reduce((total, chatMessages) => total + Object.keys(chatMessages).length, 0);
-        
-        return {
-            chats: chatCount,
-            contacts: contactCount,
-            messages: messageCount
-        };
+    }, 300000);
     }
 
     async initialize() {
@@ -203,14 +170,14 @@ class HyperWaBot {
             return undefined;
         }
 
-        // ✅ Try to get from store first
+        //  Try to get from store first
         const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
         if (storedMessage?.message) {
             logger.debug(`📨 Retrieved from store: ${key.id}`);
             return storedMessage.message;
         }
 
-        // ✅ Return undefined (Baileys will handle retry)
+        //  Return undefined (Baileys will handle retry)
         // Never return fake messages - causes decryption issues
         return undefined;
         
@@ -222,89 +189,19 @@ class HyperWaBot {
 
 
 
-
-    setupEnhancedEventHandlers(saveCreds) {
-        this.sock.ev.process(async (events) => {
-            try {
-                if (events['connection.update']) {
-                    await this.handleConnectionUpdate(events['connection.update']);
-                }
-
-                if (events['creds.update']) {
-                    await saveCreds();
-                }
-
-                if (events['messages.upsert']) {
-                    await this.handleMessagesUpsert(events['messages.upsert']);
-                }
-
-                // Store automatically handles most events, but we can add custom logic
-                if (!process.env.DOCKER) {
-                    if (events['labels.association']) {
-                        logger.info('📋 Label association update:', events['labels.association']);
-                    }
-
-                    if (events['labels.edit']) {
-                        logger.info('📝 Label edit update:', events['labels.edit']);
-                    }
-
-                    if (events.call) {
-                        logger.info('📞 Call event received:', events.call);
-                        // Store call information
-                        for (const call of events.call) {
-                            this.store.setCallOffer(call.from, call);
-                        }
-                    }
-
-                    if (events['messaging-history.set']) {
-                        const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
-                        if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
-                            logger.info('📥 Received on-demand history sync, messages:', messages.length);
-                        }
-                        logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
-                    }
-
-                    if (events['messages.update']) {
-                        for (const { key, update } of events['messages.update']) {
-                            if (update.pollUpdates) {
-                                logger.info('📊 Poll update received');
-                            }
-                        }
-                    }
-
-                    if (events['message-receipt.update']) {
-                        logger.debug('📨 Message receipt update');
-                    }
-
-                    if (events['messages.reaction']) {
-                        logger.info(`😀 Message reactions: ${events['messages.reaction'].length}`);
-                    }
-
-                    if (events['presence.update']) {
-                        logger.debug('👤 Presence updates');
-                    }
-
-                    if (events['chats.update']) {
-                        logger.debug('💬 Chats updated');
-                    }
-
-                    if (events['contacts.update']) {
-                        for (const contact of events['contacts.update']) {
-                            if (typeof contact.imgUrl !== 'undefined') {
-                                logger.info(`👤 Contact ${contact.id} profile pic updated`);
-                            }
-                        }
-                    }
-
-                    if (events['chats.delete']) {
-                        logger.info('🗑️ Chats deleted:', events['chats.delete']);
-                    }
-                }
-            } catch (error) {
-                logger.warn('⚠️ Event processing error:', error.message);
-            }
-        });
-    }
+setupEnhancedEventHandlers(saveCreds) {
+    this.sock.ev.process(async (events) => {
+        if (events['connection.update']) {
+            await this.handleConnectionUpdate(events['connection.update']);
+        }
+        if (events['creds.update']) {
+            await saveCreds();
+        }
+        if (events['messages.upsert']) {
+            await this.handleMessagesUpsert(events['messages.upsert']);
+        }
+    });
+}
 
     async handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr } = update;
