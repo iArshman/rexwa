@@ -69,8 +69,6 @@ class TelegramBridge {
             await this.loadMappingsFromDb();
             await this.loadUserChatIds();
             await this.loadFiltersFromDb();
-            await this.recreateMissingTopics();
-
             
             // Wait for WhatsApp to be ready before syncing
             if (this.whatsappBot?.sock?.user) {
