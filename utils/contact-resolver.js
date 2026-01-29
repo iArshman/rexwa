@@ -1,5 +1,5 @@
-import { jidNormalizer } from '@whiskeysockets/baileys';
 import logger from '../core/logger.js';
+import { jidNormalizer } from 'baileys'; // Declare jidNormalizer import
 
 /**
  * LID (Likely Interesting Data) Contact Resolver
@@ -101,10 +101,7 @@ export class ContactResolver {
         if (!jid) return '';
         
         try {
-            // Use Baileys' jidNormalizer if available
-            return jidNormalizer(jid);
-        } catch (error) {
-            // Fallback normalization
+            // Normalize JID to standard format
             const cleanJid = jid
                 .replace(/[^0-9@.-]/g, '')
                 .toLowerCase();
@@ -113,6 +110,9 @@ export class ContactResolver {
                 return `${cleanJid}@s.whatsapp.net`;
             }
             return cleanJid;
+        } catch (error) {
+            logger.debug(`Error normalizing JID ${jid}:`, error);
+            return jid.toLowerCase();
         }
     }
 
@@ -215,6 +215,55 @@ export class ContactResolver {
             }
         } catch (error) {
             logger.error(`Error updating contact ${jid}:`, error);
+        }
+    }
+
+    /**
+     * Resolve JID to get both LID and PN mapping
+     */
+    async resolveJid(jid) {
+        try {
+            const store = this.bot?.sock?.signalRepository?.lidMapping;
+            
+            if (!store) {
+                const phone = this.extractPhoneFromJid(jid);
+                return { lid: null, pn: jid, phone: phone || jid.split('@')[0] };
+            }
+            
+            if (jid.includes('@lid')) {
+                // JID is a LID, try to get PN
+                logger.debug(`Resolving LID to PN: ${jid}`);
+                const pnJid = await store.getPNForLID?.(jid);
+                
+                if (pnJid) {
+                    const phone = this.extractPhoneFromJid(pnJid);
+                    logger.info(`Resolved LID ${jid} → PN ${pnJid}`);
+                    return { lid: jid, pn: pnJid, phone: phone || pnJid.split('@')[0] };
+                } else {
+                    const phone = this.extractPhoneFromJid(jid);
+                    return { lid: jid, pn: null, phone: phone || jid.split('@')[0] };
+                }
+            } else {
+                // JID is a PN, try to get LID
+                const phone = this.extractPhoneFromJid(jid);
+                logger.debug(`Resolving PN to LID: ${jid}`);
+                const lidJid = await store.getLIDForPN?.(jid);
+                
+                if (lidJid) {
+                    logger.info(`Resolved PN ${jid} → LID ${lidJid}`);
+                    return { lid: lidJid, pn: jid, phone: phone || jid.split('@')[0] };
+                } else {
+                    return { lid: null, pn: jid, phone: phone || jid.split('@')[0] };
+                }
+            }
+        } catch (error) {
+            logger.error(`Error resolving JID ${jid}:`, error);
+            const phone = this.extractPhoneFromJid(jid);
+            if (jid.includes('@lid')) {
+                return { lid: jid, pn: null, phone: phone || jid.split('@')[0] };
+            } else {
+                return { lid: null, pn: jid, phone: phone || jid.split('@')[0] };
+            }
         }
     }
 
