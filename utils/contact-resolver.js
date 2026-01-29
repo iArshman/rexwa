@@ -1,5 +1,4 @@
 import logger from '../core/logger.js';
-import { jidNormalizer } from '@whiskeysockets/baileys'; // Declare jidNormalizer import
 
 /**
  * LID (Likely Interesting Data) Contact Resolver
