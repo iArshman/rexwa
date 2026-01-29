@@ -130,39 +130,62 @@ class TelegramBridge {
         }
     }
 
-    async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
-        try {
-            const updateData = { 
-                type: 'chat',
-                data: { 
-                    whatsappJid, 
-                    telegramTopicId, 
-                    createdAt: new Date(),
-                    lastActivity: new Date()
-                } 
-            };
+    async saveChatMapping(chatJid, topicId) {
+    try {
+        let pnJid = null;
+        let lidJid = null;
+        let phone = null;
 
-            if (profilePicUrl) {
-                updateData.data.profilePicUrl = profilePicUrl;
-            }
+        // If PN jid
+        if (chatJid.endsWith("@s.whatsapp.net")) {
+            pnJid = chatJid;
+            phone = pnJid.split("@")[0];
 
-            await this.collection.updateOne(
-                { type: 'chat', 'data.whatsappJid': whatsappJid },
-                { $set: updateData },
-                { upsert: true }
-            );
-            
-            this.chatMappings.set(whatsappJid, telegramTopicId);
-            if (profilePicUrl) {
-                this.profilePicCache.set(whatsappJid, profilePicUrl);
-            }
-            this.topicVerificationCache.delete(whatsappJid);
-            
-            logger.debug(`✅ Saved chat mapping: ${whatsappJid} -> ${telegramTopicId}${profilePicUrl ? ' (with profile pic)' : ''}`);
-        } catch (error) {
-            logger.error('❌ Failed to save chat mapping:', error);
+            try {
+                lidJid =
+                    await this.whatsappBot.sock.signalRepository?.lidMapping?.getLIDForPN(pnJid);
+            } catch {}
         }
+
+        // If LID jid
+        else if (chatJid.includes("@lid")) {
+            lidJid = chatJid;
+
+            pnJid = await this.resolvePNFromLID(lidJid);
+
+            if (pnJid) {
+                phone = pnJid.split("@")[0];
+            }
+        }
+
+        // Save DB
+        await this.collection.updateOne(
+            { type: "chat", topicId },
+            {
+                $set: {
+                    topicId,
+                    whatsappJid: chatJid,
+                    pnJid,
+                    lidJid,
+                    phone,
+                    updatedAt: new Date()
+                }
+            },
+            { upsert: true }
+        );
+
+        // Cache both
+        this.chatMappings.set(chatJid, topicId);
+        if (pnJid) this.chatMappings.set(pnJid, topicId);
+        if (lidJid) this.chatMappings.set(lidJid, topicId);
+
+        logger.info(`💬 Saved chat mapping: ${chatJid} -> Topic ${topicId}`);
+
+    } catch (err) {
+        logger.error("❌ Failed to save chat mapping:", err.message);
     }
+}
+
     
    async loadUserChatIds() {
     try {
@@ -240,28 +263,63 @@ async clearFilters() {
         }
     }
 
-    async saveContactMapping(phone, name) {
-        try {
-            await this.collection.updateOne(
-                { type: 'contact', 'data.phone': phone },
-                { 
-                    $set: { 
-                        type: 'contact',
-                        data: { 
-                            phone, 
-                            name, 
-                            updatedAt: new Date() 
-                        } 
-                    } 
-                },
-                { upsert: true }
-            );
-            this.contactMappings.set(phone, name);
-            logger.debug(`✅ Saved contact mapping: ${phone} -> ${name}`);
-        } catch (error) {
-            logger.error('❌ Failed to save contact mapping:', error);
+    async saveContactMapping(contact) {
+    try {
+        let pnJid = null;
+        let lidJid = null;
+        let phone = null;
+
+        // ✅ Case 1: PN contact
+        if (contact.id.endsWith("@s.whatsapp.net")) {
+            pnJid = contact.id;
+            phone = pnJid.split("@")[0];
+
+            // Try resolving LID also
+            try {
+                lidJid =
+                    await this.whatsappBot.sock.signalRepository?.lidMapping?.getLIDForPN(pnJid);
+            } catch {}
         }
+
+        // ✅ Case 2: LID contact
+        else if (contact.id.includes("@lid")) {
+            lidJid = contact.id;
+
+            pnJid = await this.resolvePNFromLID(lidJid);
+
+            if (pnJid) {
+                phone = pnJid.split("@")[0];
+            }
+        }
+
+        // ❌ If still no phone → skip
+        if (!phone) return;
+
+        // ✅ Save into DB
+        await this.collection.updateOne(
+            { type: "contact", phone },
+            {
+                $set: {
+                    phone,
+                    name: contact.name,
+                    pnJid,
+                    lidJid,
+                    updatedAt: new Date()
+                }
+            },
+            { upsert: true }
+        );
+
+        // ✅ Cache
+        this.contactMappings.set(phone, contact.name);
+
+        logger.info(`📞 Saved contact: ${contact.name} (${phone})`);
+
+    } catch (err) {
+        logger.error("❌ Failed to save contact mapping:", err.message);
     }
+}
+
 
     async syncContacts() {
         try {
@@ -960,27 +1018,22 @@ getMediaType(msg) {
 
 async getOrCreateTopic(chatJid, whatsappMsg) {
 
-    // ✅ If topic exists in cache
+    // ✅ Return cached topic if exists
     if (this.chatMappings.has(chatJid)) {
-
         const topicId = this.chatMappings.get(chatJid);
 
-        // ✅ Verify topic still exists on Telegram
         const exists = await this.verifyTopicExists(topicId);
 
-        if (exists) {
-            return topicId;
-        }
+        if (exists) return topicId;
 
-        // ❌ Topic deleted → clean mapping
-        logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
+        // ❌ Deleted topic cleanup
+        logger.warn(`🗑️ Topic ${topicId} deleted, recreating...`);
 
         this.chatMappings.delete(chatJid);
-        this.profilePicCache.delete(chatJid);
 
         await this.collection.deleteOne({
             type: "chat",
-            "data.whatsappJid": chatJid
+            topicId
         });
     }
 
@@ -989,52 +1042,29 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // ✅ Create new topic promise
     const creationPromise = (async () => {
-
-        const chatId = config.get("telegram.chatId");
-        if (!chatId) {
-            logger.error("❌ Telegram chat ID missing");
-            return null;
-        }
-
         try {
-            const isGroup = chatJid.endsWith("@g.us");
-            const isStatus = chatJid === "status@broadcast";
-            const isCall = chatJid === "call@broadcast";
+            const chatId = config.get("telegram.chatId");
 
-            let topicName;
-            let iconColor = 0x7ABA3C;
+            // ✅ Resolve PN for naming
+            let phone = chatJid.split("@")[0];
 
-            if (isStatus) {
-                topicName = "📊 Status Updates";
-                iconColor = 0xFF6B35;
-            } else if (isCall) {
-                topicName = "📞 Call Logs";
-                iconColor = 0xFF4757;
-            } else if (isGroup) {
-                try {
-                    const meta = await this.whatsappBot.sock.groupMetadata(chatJid);
-                    topicName = meta.subject;
-                } catch {
-                    topicName = "Group Chat";
-                }
-                iconColor = 0x6FB9F0;
-            } else {
-                const phone = chatJid.split("@")[0];
-                const contactName = this.contactMappings.get(phone);
-                topicName = contactName || `+${phone}`;
+            if (chatJid.includes("@lid")) {
+                const pn = await this.resolvePNFromLID(chatJid);
+                if (pn) phone = pn.split("@")[0];
             }
 
-            // ✅ Create topic
-            const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
-                icon_color: iconColor
-            });
+            const contactName = this.contactMappings.get(phone);
 
-            // ✅ Save mapping
+            const topicName = contactName || `+${phone}`;
+
+            // ✅ Create topic
+            const topic = await this.telegramBot.createForumTopic(chatId, topicName);
+
+            // ✅ Save mapping (PN+LID)
             await this.saveChatMapping(chatJid, topic.message_thread_id);
 
-            logger.info(`🆕 Topic recreated: "${topicName}" (${topic.message_thread_id})`);
+            logger.info(`🆕 Topic created: ${topicName}`);
 
             return topic.message_thread_id;
 
@@ -1044,24 +1074,47 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
         } finally {
             this.creatingTopics.delete(chatJid);
         }
-
     })();
 
     this.creatingTopics.set(chatJid, creationPromise);
     return await creationPromise;
 }
+
 async verifyTopicExists(topicId) {
     try {
-        const chatId = config.get("telegram.chatId");
-
-        // Telegram API call to check topic existence
-        await this.telegramBot.getForumTopic(chatId, topicId);
-
+        await this.telegramBot.getForumTopic(
+            config.get("telegram.chatId"),
+            topicId
+        );
         return true;
-    } catch (err) {
+    } catch {
         return false;
     }
+}function isValidPNJid(pnJid) {
+    if (!pnJid) return false;
+    if (!pnJid.endsWith("@s.whatsapp.net")) return false;
+
+    const phone = pnJid.split("@")[0];
+
+    // ❌ Reject invalid mappings
+    if (!phone || phone === "0") return false;
+    if (phone.length < 8) return false;
+
+    return true;
 }
+async resolvePNFromLID(lidJid) {
+    try {
+        const pn = await this.whatsappBot.sock.signalRepository?.lidMapping?.getPNForLID(lidJid);
+
+        if (isValidPNJid(pn)) return pn;
+
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+
 
     async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUrl = null) {
         try {
