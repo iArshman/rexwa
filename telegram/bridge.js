@@ -634,7 +634,7 @@ async sendStartMessage() {
                         participant: jid.endsWith('@g.us') ? jid : jid 
                     }
                 };
-                await this.getOrCreateTopic(jid, dummyMsg);
+                await this.(jid, dummyMsg);
                 
                 logger.info(`✅ Recreated topic for ${jid}`);
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -962,7 +962,7 @@ getMediaType(msg) {
 
  async getOrCreateTopic(chatJid, whatsappMsg) {
 
-    // ✅ Step 1: Resolve LID → PN
+    // ✅ Resolve LID → PN first
     chatJid = await this.resolveToPN(chatJid);
 
     // ✅ Topic already exists?
@@ -970,11 +970,10 @@ getMediaType(msg) {
 
         const topicId = this.chatMappings.get(chatJid);
 
-        // Verify topic exists
         const exists = await this.verifyTopicExists(topicId);
         if (exists) return topicId;
 
-        // Deleted topic cleanup
+        // Topic deleted cleanup
         logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
 
         this.chatMappings.delete(chatJid);
@@ -991,7 +990,7 @@ getMediaType(msg) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // ✅ Create new topic
+    // ✅ Create topic promise
     const creationPromise = (async () => {
 
         const chatId = config.get("telegram.chatId");
@@ -1004,47 +1003,77 @@ getMediaType(msg) {
             const isGroup = chatJid.endsWith("@g.us");
             const isStatus = chatJid === "status@broadcast";
             const isCall = chatJid === "call@broadcast";
+            const isChannel = isJidNewsletter(chatJid);
 
             let topicName;
             let iconColor = 0x7ABA3C;
 
-            // Special topics
+            // ===============================
+            // ✅ STATUS TOPIC
+            // ===============================
             if (isStatus) {
                 topicName = "📊 Status Updates";
                 iconColor = 0xFF6B35;
+            }
 
-            } else if (isCall) {
+            // ===============================
+            // ✅ CALL TOPIC
+            // ===============================
+            else if (isCall) {
                 topicName = "📞 Call Logs";
                 iconColor = 0xFF4757;
+            }
 
-            } else if (isGroup) {
-                // Group subject
+            // ===============================
+            // ✅ GROUP TOPIC
+            // ===============================
+            else if (isGroup) {
                 try {
                     const meta = await this.whatsappBot.sock.groupMetadata(chatJid);
-                    topicName = meta.subject;
+                    topicName = meta.subject || "Group Chat";
                 } catch {
                     topicName = "Group Chat";
                 }
+
                 iconColor = 0x6FB9F0;
-
-            } else {
-                // ✅ ONLY 2 LEVELS (Saved Contact OR Phone)
-
-                const phone = this.normalizePhone(chatJid);
-
-                // Level 1: Saved contact name
-                const savedName = this.contactMappings.get(phone);
-
-                // Level 2 fallback: phone number
-                topicName = savedName || `+${phone}`;
             }
 
-            // Create Telegram topic
+            // ===============================
+            // ✅ CHANNEL / COMMUNITY TOPIC
+            // ===============================
+            else if (isChannel) {
+
+                // Channels have no phonebook contacts → use pushName
+                topicName =
+                    whatsappMsg?.pushName ||
+                    "📢 WhatsApp Channel";
+
+                iconColor = 0xFFD93D;
+            }
+
+            // ===============================
+            // ✅ NORMAL DM TOPIC
+            // ===============================
+            else {
+
+                // Normalize phone
+                const phone = this.normalizePhone(chatJid);
+
+                // Level 1: Only saved contact name
+                const savedName = this.contactMappings.get(phone);
+
+                // Level 2 fallback: phone number only
+                topicName = savedName || `+${phone}`;
+
+                iconColor = 0x7ABA3C;
+            }
+
+            // ✅ Create Telegram forum topic
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
-            // Save mapping
+            // ✅ Save mapping
             await this.saveChatMapping(chatJid, topic.message_thread_id);
 
             logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
