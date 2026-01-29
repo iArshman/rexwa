@@ -962,19 +962,19 @@ getMediaType(msg) {
 
  async getOrCreateTopic(chatJid, whatsappMsg) {
 
-    // ✅ Normalize LID → PN first (so UI me lid na aaye)
+    // ✅ Step 1: Resolve LID → PN
     chatJid = await this.resolveToPN(chatJid);
 
-    // ✅ If topic exists already
+    // ✅ Topic already exists?
     if (this.chatMappings.has(chatJid)) {
 
         const topicId = this.chatMappings.get(chatJid);
 
-        // Verify topic still exists
+        // Verify topic exists
         const exists = await this.verifyTopicExists(topicId);
         if (exists) return topicId;
 
-        // Topic deleted → cleanup mapping
+        // Deleted topic cleanup
         logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
 
         this.chatMappings.delete(chatJid);
@@ -986,12 +986,12 @@ getMediaType(msg) {
         });
     }
 
-    // ✅ Prevent duplicate topic creation
+    // Prevent duplicate creation
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // ✅ Create topic promise
+    // ✅ Create new topic
     const creationPromise = (async () => {
 
         const chatId = config.get("telegram.chatId");
@@ -1028,23 +1028,23 @@ getMediaType(msg) {
                 iconColor = 0x6FB9F0;
 
             } else {
-                // ✅ ONLY 2 LEVELS:
+                // ✅ ONLY 2 LEVELS (Saved Contact OR Phone)
 
-                const phone = chatJid.split("@")[0];
+                const phone = this.normalizePhone(chatJid);
 
-                // Level 1: Saved contact name only
+                // Level 1: Saved contact name
                 const savedName = this.contactMappings.get(phone);
 
-                // Level 2: Fallback → phone number only
+                // Level 2 fallback: phone number
                 topicName = savedName || `+${phone}`;
             }
 
-            // ✅ Create Telegram forum topic
+            // Create Telegram topic
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
-            // ✅ Save mapping
+            // Save mapping
             await this.saveChatMapping(chatJid, topic.message_thread_id);
 
             logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
@@ -1064,16 +1064,18 @@ getMediaType(msg) {
     this.creatingTopics.set(chatJid, creationPromise);
     return await creationPromise;
 }
+
 // ✅ Resolve LID → PN 
+
 async resolveToPN(jid) {
     if (!jid) return jid;
 
-    // Already PN or Group JID
+    // Already normal PN or group
     if (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@g.us")) {
         return jid;
     }
 
-    // Try converting LID → PN
+    // Convert LID → PN
     try {
         const pn =
             await this.whatsappBot.sock?.signalRepository?.lidMapping?.getPNForLID(
@@ -1088,8 +1090,23 @@ async resolveToPN(jid) {
         logger.debug("❌ Bridge could not resolve LID → PN");
     }
 
-    // Fallback return original
     return jid;
+}
+
+
+// ✅ Normalize phone number (removes :0 device suffix)
+normalizePhone(jid) {
+    if (!jid) return "";
+
+    // Remove domain part
+    let phone = jid.split("@")[0];
+
+    // Remove ":0" or ":1" suffix
+    if (phone.includes(":")) {
+        phone = phone.split(":")[0];
+    }
+
+    return phone;
 }
 
 async verifyTopicExists(topicId) {
