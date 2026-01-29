@@ -652,7 +652,9 @@ async sendStartMessage() {
     async syncMessage(whatsappMsg, text) {
         if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
-        const sender = whatsappMsg.key.remoteJid;
+        let sender = whatsappMsg.key.remoteJid;
+        sender = await this.resolveToPN(sender);
+
         const participant = whatsappMsg.key.participant || sender;
         const isFromMe = whatsappMsg.key.fromMe;
         
@@ -958,21 +960,21 @@ getMediaType(msg) {
         logger.debug(`👤 Created user mapping: ${userName || userPhone} (${userPhone})`);
     }
 
-   async getOrCreateTopic(chatJid, whatsappMsg) {
+ async getOrCreateTopic(chatJid, whatsappMsg) {
 
-    // ✅ If topic exists in cache
+    // ✅ Normalize LID → PN first (so UI me lid na aaye)
+    chatJid = await this.resolveToPN(chatJid);
+
+    // ✅ If topic exists already
     if (this.chatMappings.has(chatJid)) {
 
         const topicId = this.chatMappings.get(chatJid);
 
-        // ✅ Verify topic still exists on Telegram
+        // Verify topic still exists
         const exists = await this.verifyTopicExists(topicId);
+        if (exists) return topicId;
 
-        if (exists) {
-            return topicId;
-        }
-
-        // ❌ Topic deleted → clean mapping
+        // Topic deleted → cleanup mapping
         logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
 
         this.chatMappings.delete(chatJid);
@@ -984,12 +986,12 @@ getMediaType(msg) {
         });
     }
 
-    // ✅ Prevent duplicate creation
+    // ✅ Prevent duplicate topic creation
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // ✅ Create new topic promise
+    // ✅ Create topic promise
     const creationPromise = (async () => {
 
         const chatId = config.get("telegram.chatId");
@@ -1006,13 +1008,17 @@ getMediaType(msg) {
             let topicName;
             let iconColor = 0x7ABA3C;
 
+            // Special topics
             if (isStatus) {
                 topicName = "📊 Status Updates";
                 iconColor = 0xFF6B35;
+
             } else if (isCall) {
                 topicName = "📞 Call Logs";
                 iconColor = 0xFF4757;
+
             } else if (isGroup) {
+                // Group subject
                 try {
                     const meta = await this.whatsappBot.sock.groupMetadata(chatJid);
                     topicName = meta.subject;
@@ -1020,13 +1026,20 @@ getMediaType(msg) {
                     topicName = "Group Chat";
                 }
                 iconColor = 0x6FB9F0;
+
             } else {
+                // ✅ ONLY 2 LEVELS:
+
                 const phone = chatJid.split("@")[0];
-                const contactName = this.contactMappings.get(phone);
-                topicName = contactName || `+${phone}`;
+
+                // Level 1: Saved contact name only
+                const savedName = this.contactMappings.get(phone);
+
+                // Level 2: Fallback → phone number only
+                topicName = savedName || `+${phone}`;
             }
 
-            // ✅ Create topic
+            // ✅ Create Telegram forum topic
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
@@ -1034,13 +1047,14 @@ getMediaType(msg) {
             // ✅ Save mapping
             await this.saveChatMapping(chatJid, topic.message_thread_id);
 
-            logger.info(`🆕 Topic recreated: "${topicName}" (${topic.message_thread_id})`);
+            logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
 
             return topic.message_thread_id;
 
         } catch (err) {
             logger.error("❌ Topic creation failed:", err.message);
             return null;
+
         } finally {
             this.creatingTopics.delete(chatJid);
         }
@@ -1050,6 +1064,34 @@ getMediaType(msg) {
     this.creatingTopics.set(chatJid, creationPromise);
     return await creationPromise;
 }
+// ✅ Resolve LID → PN 
+async resolveToPN(jid) {
+    if (!jid) return jid;
+
+    // Already PN or Group JID
+    if (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@g.us")) {
+        return jid;
+    }
+
+    // Try converting LID → PN
+    try {
+        const pn =
+            await this.whatsappBot.sock?.signalRepository?.lidMapping?.getPNForLID(
+                jid
+            );
+
+        if (pn) {
+            logger.debug(`📞 Bridge resolved LID → PN: ${jid} → ${pn}`);
+            return pn;
+        }
+    } catch (err) {
+        logger.debug("❌ Bridge could not resolve LID → PN");
+    }
+
+    // Fallback return original
+    return jid;
+}
+
 async verifyTopicExists(topicId) {
     try {
         const chatId = config.get("telegram.chatId");
