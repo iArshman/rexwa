@@ -649,62 +649,131 @@ async sendStartMessage() {
         }
     }
 
-    async syncMessage(whatsappMsg, text) {
-        if (!this.telegramBot || !config.get('telegram.enabled')) return;
+async syncMessage(whatsappMsg, text) {
+    if (!this.telegramBot || !config.get("telegram.enabled")) return;
 
-        let sender = whatsappMsg.key.remoteJid;
-        sender = await this.resolveToPN(sender);
+    // =====================================================
+    // ✅ Normalize sender (Fix duplicate topics)
+    // =====================================================
+    let sender = whatsappMsg.key.remoteJid;
 
-        const participant = whatsappMsg.key.participant || sender;
-        const isFromMe = whatsappMsg.key.fromMe;
-        
-        if (sender === 'status@broadcast') {
-            await this.handleStatusMessage(whatsappMsg, text);
-            return;
-        }
-        
-        if (isFromMe) {
-            const existingTopicId = this.chatMappings.get(sender);
-            if (existingTopicId) {
-                await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
-            }
-            return;
-        }
-        
-        await this.createUserMapping(participant, whatsappMsg);
-        const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
-        
-        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
-        } else if (whatsappMsg.message?.imageMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
-        } else if (whatsappMsg.message?.videoMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
-        } else if (whatsappMsg.message?.audioMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
-        } else if (whatsappMsg.message?.documentMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
-        } else if (whatsappMsg.message?.stickerMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
-        } else if (whatsappMsg.message?.locationMessage) { 
-            await this.handleWhatsAppLocation(whatsappMsg, topicId);
-        } else if (whatsappMsg.message?.contactMessage) { 
-            await this.handleWhatsAppContact(whatsappMsg, topicId);
-        } else if (text) {
-            let messageText = text;
-            if (sender.endsWith('@g.us') && participant !== sender) {
-                const senderPhone = participant.split('@')[0];
-                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-                messageText = `👤 ${senderName}:\n${text}`;
-            }
-            
-            await this.sendSimpleMessage(topicId, messageText, sender);
-        }
+    // 1. Resolve LID → PN
+    sender = await this.resolveToPN(sender);
 
-        if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
-            this.queueMessageForReadReceipt(sender, whatsappMsg.key);
-        }
+    // 2. Remove ":0" suffix always
+    if (sender.endsWith("@s.whatsapp.net")) {
+        sender = this.normalizePhone(sender) + "@s.whatsapp.net";
     }
+
+    // =====================================================
+    // ✅ Normalize participant also (important for groups)
+    // =====================================================
+    let participant = whatsappMsg.key.participant || sender;
+
+    participant = await this.resolveToPN(participant);
+
+    if (participant.endsWith("@s.whatsapp.net")) {
+        participant = this.normalizePhone(participant) + "@s.whatsapp.net";
+    }
+
+    const isFromMe = whatsappMsg.key.fromMe;
+
+    // =====================================================
+    // ✅ Status messages
+    // =====================================================
+    if (sender === "status@broadcast") {
+        await this.handleStatusMessage(whatsappMsg, text);
+        return;
+    }
+
+    // =====================================================
+    // ✅ Outgoing messages (from me)
+    // =====================================================
+    if (isFromMe) {
+        const existingTopicId = this.chatMappings.get(sender);
+        if (existingTopicId) {
+            await this.syncOutgoingMessage(
+                whatsappMsg,
+                text,
+                existingTopicId,
+                sender
+            );
+        }
+        return;
+    }
+
+    // =====================================================
+    // ✅ Ensure user mapping uses normalized participant
+    // =====================================================
+    await this.createUserMapping(participant, whatsappMsg);
+
+    // =====================================================
+    // ✅ Topic creation uses normalized sender
+    // =====================================================
+    const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
+
+    // =====================================================
+    // ✅ Media Handling
+    // =====================================================
+    if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+        await this.handleWhatsAppMedia(whatsappMsg, "video_note", topicId);
+
+    } else if (whatsappMsg.message?.imageMessage) {
+        await this.handleWhatsAppMedia(whatsappMsg, "image", topicId);
+
+    } else if (whatsappMsg.message?.videoMessage) {
+        await this.handleWhatsAppMedia(whatsappMsg, "video", topicId);
+
+    } else if (whatsappMsg.message?.audioMessage) {
+        await this.handleWhatsAppMedia(whatsappMsg, "audio", topicId);
+
+    } else if (whatsappMsg.message?.documentMessage) {
+        await this.handleWhatsAppMedia(whatsappMsg, "document", topicId);
+
+    } else if (whatsappMsg.message?.stickerMessage) {
+        await this.handleWhatsAppMedia(whatsappMsg, "sticker", topicId);
+
+    } else if (whatsappMsg.message?.locationMessage) {
+        await this.handleWhatsAppLocation(whatsappMsg, topicId);
+
+    } else if (whatsappMsg.message?.contactMessage) {
+        await this.handleWhatsAppContact(whatsappMsg, topicId);
+
+    }
+
+    // =====================================================
+    // ✅ Text Messages
+    // =====================================================
+    else if (text) {
+
+        let messageText = text;
+
+        // Group participant name display
+        if (sender.endsWith("@g.us") && participant !== sender) {
+
+            const senderPhone = this.normalizePhone(participant);
+
+            // Only saved contact OR fallback phone
+            const senderName =
+                this.contactMappings.get(senderPhone) || `+${senderPhone}`;
+
+            messageText = `👤 ${senderName}:\n${text}`;
+        }
+
+        await this.sendSimpleMessage(topicId, messageText, sender);
+    }
+
+    // =====================================================
+    // ✅ Read Receipts Queue
+    // =====================================================
+    if (
+        whatsappMsg.key?.id &&
+        config.get("telegram.features.readReceipts") !== false
+    ) {
+        this.queueMessageForReadReceipt(sender, whatsappMsg.key);
+    }
+}
+
 
 async handleStatusMessage(whatsappMsg, text) {
     try {
@@ -962,10 +1031,23 @@ getMediaType(msg) {
 
  async getOrCreateTopic(chatJid, whatsappMsg) {
 
-    // ✅ Resolve LID → PN first
+    // =====================================================
+    // ✅ STEP 1: Resolve LID → PN
+    // =====================================================
     chatJid = await this.resolveToPN(chatJid);
 
-    // ✅ Topic already exists?
+    // =====================================================
+    // ✅ STEP 2: Normalize ":0" suffix always
+    // Example: 12103991207:0@s.whatsapp.net → 12103991207@s.whatsapp.net
+    // =====================================================
+    if (chatJid.endsWith("@s.whatsapp.net")) {
+        const phone = this.normalizePhone(chatJid);
+        chatJid = phone + "@s.whatsapp.net";
+    }
+
+    // =====================================================
+    // ✅ STEP 3: If mapping exists, verify topic still exists
+    // =====================================================
     if (this.chatMappings.has(chatJid)) {
 
         const topicId = this.chatMappings.get(chatJid);
@@ -973,7 +1055,7 @@ getMediaType(msg) {
         const exists = await this.verifyTopicExists(topicId);
         if (exists) return topicId;
 
-        // Topic deleted cleanup
+        // Topic deleted → cleanup
         logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
 
         this.chatMappings.delete(chatJid);
@@ -985,12 +1067,16 @@ getMediaType(msg) {
         });
     }
 
-    // Prevent duplicate creation
+    // =====================================================
+    // ✅ STEP 4: Prevent duplicate creation race condition
+    // =====================================================
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // ✅ Create topic promise
+    // =====================================================
+    // ✅ STEP 5: Create topic promise
+    // =====================================================
     const creationPromise = (async () => {
 
         const chatId = config.get("telegram.chatId");
@@ -1025,7 +1111,7 @@ getMediaType(msg) {
             }
 
             // ===============================
-            // ✅ GROUP TOPIC
+            // ✅ GROUP TOPIC (use subject)
             // ===============================
             else if (isGroup) {
                 try {
@@ -1039,11 +1125,11 @@ getMediaType(msg) {
             }
 
             // ===============================
-            // ✅ CHANNEL / COMMUNITY TOPIC
+            // ✅ NEWSLETTER / CHANNEL TOPIC
             // ===============================
             else if (isChannel) {
 
-                // Channels have no phonebook contacts → use pushName
+                // Channels have no phone → pushName best
                 topicName =
                     whatsappMsg?.pushName ||
                     "📢 WhatsApp Channel";
@@ -1056,24 +1142,28 @@ getMediaType(msg) {
             // ===============================
             else {
 
-                // Normalize phone
+                // Only saved contact OR phone number
                 const phone = this.normalizePhone(chatJid);
 
-                // Level 1: Only saved contact name
+                // Level 1: Saved contact name
                 const savedName = this.contactMappings.get(phone);
 
-                // Level 2 fallback: phone number only
+                // Level 2 fallback: phone only
                 topicName = savedName || `+${phone}`;
 
                 iconColor = 0x7ABA3C;
             }
 
-            // ✅ Create Telegram forum topic
+            // =====================================================
+            // ✅ Create Telegram Forum Topic
+            // =====================================================
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
-            // ✅ Save mapping
+            // =====================================================
+            // ✅ Save mapping ALWAYS on normalized JID
+            // =====================================================
             await this.saveChatMapping(chatJid, topic.message_thread_id);
 
             logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
