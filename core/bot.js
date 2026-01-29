@@ -13,13 +13,14 @@ import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
 import path from 'path';
 import NodeCache from '@cacheable/node-cache';
-import { makeInMemoryStore } from '../utils/store.js';
+import { makeInMemoryStore } from './store.js';
 import config from '../config.js';
 import logger from './logger.js';
 import MessageHandler from './message-handler.js';
 import { connectDb } from '../utils/db.js';
 import ModuleLoader from './module-loader.js';
 import { useMongoAuthState } from '../utils/mongoAuthState.js';
+import ContactResolver from '../utils/contact-resolver.js'; 
 
 class HyperWaBot {
     constructor() {
@@ -33,6 +34,7 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
+        this.contactResolver = new ContactResolver(this);
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
         logger: logger.child({ module: 'store' }),
@@ -40,54 +42,92 @@ class HyperWaBot {
         autoSaveInterval: 30000
     });
     
+    // Load existing data
     this.store.loadFromFile();
-
+    
+    // ✅ Proper cache setup
     this.msgRetryCounterCache = new NodeCache();
     this.onDemandMap = new Map();
-
+    
+    // Memory cleanup
     setInterval(() => {
         if (this.onDemandMap.size > 100) {
             this.onDemandMap.clear();
         }
-    }, 300000);
-    }
-  async initialize() {
-    logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
+    }, 300000); // 5 minutes
 
-    try {
-        this.db = await connectDb();
-        // removed DB connected log
-    } catch (error) {
-        logger.error('❌ Failed to connect to database:', error);
-        process.exit(1);
+
+        // Store event listeners for advanced features
+        this.setupStoreEventListeners();
     }
 
-    if (config.get('telegram.enabled')) {
+    setupStoreEventListeners() {
+        // Monitor store events for analytics and features
+        this.store.on('messages.upsert', (data) => {
+            logger.debug(`📝 Store: ${data.messages.length} messages cached`);
+        });
+
+        this.store.on('contacts.upsert', (contacts) => {
+            logger.debug(`👥 Store: ${contacts.length} contacts cached`);
+        });
+
+        this.store.on('chats.upsert', (chats) => {
+            logger.debug(`💬 Store: ${chats.length} chats cached`);
+        });
+
+    }
+
+    getStoreStats() {
+        const chatCount = Object.keys(this.store.chats).length;
+        const contactCount = Object.keys(this.store.contacts).length;
+        const messageCount = Object.values(this.store.messages)
+            .reduce((total, chatMessages) => total + Object.keys(chatMessages).length, 0);
+        
+        return {
+            chats: chatCount,
+            contacts: contactCount,
+            messages: messageCount
+        };
+    }
+
+    async initialize() {
+        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
+
         try {
-            const { default: TelegramBridge } = await import('../telegram/bridge.js');
-            this.telegramBridge = new TelegramBridge(this);
-            await this.telegramBridge.initialize();
-            logger.info('✅ Telegram bridge initialized');
-
-            try {
-                await this.telegramBridge.sendStartMessage();
-            } catch (err) {
-                // removed warn log
-            }
+            this.db = await connectDb();
+            logger.info('✅ Database connected successfully!');
         } catch (error) {
-            logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
-            this.telegramBridge = null;
+            logger.error('❌ Failed to connect to database:', error);
+            process.exit(1);
         }
+
+        if (config.get('telegram.enabled')) {
+            try {
+                const { default: TelegramBridge } = await import('../telegram/bridge.js');
+                this.telegramBridge = new TelegramBridge(this);
+                await this.telegramBridge.initialize();
+                logger.info('✅ Telegram bridge initialized');
+
+                try {
+                    await this.telegramBridge.sendStartMessage();
+                } catch (err) {
+                    logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
+                }
+            } catch (error) {
+                logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
+                this.telegramBridge = null;
+            }
+        }
+
+        await this.moduleLoader.loadModules();
+        await this.startWhatsApp();
+
+        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
     }
-
-    await this.moduleLoader.loadModules();
-    await this.startWhatsApp();
-
-    logger.info('✅ HyperWa Userbotinitialized successfully!');
-}
 
     async startWhatsApp() {
         let state, saveCreds;
+
         // Clean up existing socket if present
         if (this.sock) {
             logger.info('🧹 Cleaning up existing WhatsApp socket');
@@ -98,17 +138,11 @@ class HyperWaBot {
 
         // Choose auth method based on configuration
         if (this.useMongoAuth) {
+            ({ state, saveCreds } = await useMongoAuthState());
             logger.info('🔧 Using MongoDB auth state...');
-            try {
-                ({ state, saveCreds } = await useMongoAuthState());
-            } catch (error) {
-                logger.error('❌ Failed to initialize MongoDB auth state:', error);
-                logger.info('🔄 Falling back to file-based auth...');
-                ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
-            }
         } else {
-            logger.info('🔧 Using file-based auth state...');
             ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+            logger.info('🔧 Using file-based auth state...');
         }
 
         const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -130,7 +164,8 @@ class HyperWaBot {
         firewall: true,
         printQRInTerminal: false
     });
-            
+
+    // ✅ CRITICAL: Bind store to socket events
     this.store.bind(this.sock.ev);
     logger.info('🔗 Store bound to socket');
             const connectionPromise = new Promise((resolve, reject) => {
@@ -161,17 +196,22 @@ class HyperWaBot {
         }
     }
 
+    // Enhanced getMessage with store lookup
     async getMessage(key) {
     try {
         if (!key?.remoteJid || !key?.id) {
             return undefined;
         }
+
+        // ✅ Try to get from store first
         const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
         if (storedMessage?.message) {
             logger.debug(`📨 Retrieved from store: ${key.id}`);
             return storedMessage.message;
         }
 
+        // ✅ Return undefined (Baileys will handle retry)
+        // Never return fake messages - causes decryption issues
         return undefined;
         
     } catch (error) {
@@ -180,19 +220,91 @@ class HyperWaBot {
     }
 }
 
-setupEnhancedEventHandlers(saveCreds) {
-    this.sock.ev.process(async (events) => {
-        if (events['connection.update']) {
-            await this.handleConnectionUpdate(events['connection.update']);
-        }
-        if (events['creds.update']) {
-            await saveCreds();
-        }
-        if (events['messages.upsert']) {
-            await this.handleMessagesUpsert(events['messages.upsert']);
-        }
-    });
-}
+
+
+
+    setupEnhancedEventHandlers(saveCreds) {
+        this.sock.ev.process(async (events) => {
+            try {
+                if (events['connection.update']) {
+                    await this.handleConnectionUpdate(events['connection.update']);
+                }
+
+                if (events['creds.update']) {
+                    await saveCreds();
+                }
+
+                if (events['messages.upsert']) {
+                    await this.handleMessagesUpsert(events['messages.upsert']);
+                }
+
+                // Store automatically handles most events, but we can add custom logic
+                if (!process.env.DOCKER) {
+                    if (events['labels.association']) {
+                        logger.info('📋 Label association update:', events['labels.association']);
+                    }
+
+                    if (events['labels.edit']) {
+                        logger.info('📝 Label edit update:', events['labels.edit']);
+                    }
+
+                    if (events.call) {
+                        logger.info('📞 Call event received:', events.call);
+                        // Store call information
+                        for (const call of events.call) {
+                            this.store.setCallOffer(call.from, call);
+                        }
+                    }
+
+                    if (events['messaging-history.set']) {
+                        const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
+                        if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+                            logger.info('📥 Received on-demand history sync, messages:', messages.length);
+                        }
+                        logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
+                    }
+
+                    if (events['messages.update']) {
+                        for (const { key, update } of events['messages.update']) {
+                            if (update.pollUpdates) {
+                                logger.info('📊 Poll update received');
+                            }
+                        }
+                    }
+
+                    if (events['message-receipt.update']) {
+                        logger.debug('📨 Message receipt update');
+                    }
+
+                    if (events['messages.reaction']) {
+                        logger.info(`😀 Message reactions: ${events['messages.reaction'].length}`);
+                    }
+
+                    if (events['presence.update']) {
+                        logger.debug('👤 Presence updates');
+                    }
+
+                    if (events['chats.update']) {
+                        logger.debug('💬 Chats updated');
+                    }
+
+                    if (events['contacts.update']) {
+                        for (const contact of events['contacts.update']) {
+                            if (typeof contact.imgUrl !== 'undefined') {
+                                logger.info(`👤 Contact ${contact.id} profile pic updated`);
+                            }
+                        }
+                    }
+
+                    if (events['chats.delete']) {
+                        logger.info('🗑️ Chats deleted:', events['chats.delete']);
+                    }
+                }
+            } catch (error) {
+                logger.warn('⚠️ Event processing error:', error.message);
+            }
+        });
+    }
 
     async handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr } = update;
@@ -233,6 +345,7 @@ setupEnhancedEventHandlers(saveCreds) {
                     }
                 }
 
+                // Final store save
                 this.store.saveToFile();
                 process.exit(1);
             }
@@ -316,8 +429,11 @@ setupEnhancedEventHandlers(saveCreds) {
         if (!owner) return;
 
         const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
+        const storeStats = this.getStoreStats();
         
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
+                              `🔥 *HyperWa Features Active:*\n` +
+                              `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
         try {
@@ -352,6 +468,7 @@ setupEnhancedEventHandlers(saveCreds) {
         logger.info('🛑 Shutting down HyperWa Userbot...');
         this.isShuttingDown = true;
 
+        // Cleanup store
         this.store.cleanup();
 
         if (this.telegramBridge) {
