@@ -31,45 +31,48 @@ class MessageHandler {
         this.messageHooks.delete(hookName);
         logger.debug(`🗑️ Unregistered message hook: ${hookName}`);
     }
-
     async handleMessages({ messages, type }) {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
             try {
                 await this.processMessage(msg);
-            } catch (error) {
-                console.error('[UNCAUGHT ERROR]', error);
-                logger.error('Error processing message:', error?.stack || error?.message || JSON.stringify(error));
-            }
+} catch (error) {
+    console.error('[UNCAUGHT ERROR]', error); // Full dump
+    logger.error('Error processing message:', error?.stack || error?.message || JSON.stringify(error));
+}
+
+
         }
     }
 
-async processMessage(msg) {
-
+    async processMessage(msg) {
         // Handle status messages
         if (msg.key.remoteJid === 'status@broadcast') {
             return this.handleStatusMessage(msg);
         }
 
+        // Extract text from message (including captions)
         const text = this.extractText(msg);
+        
+        // Check if it's a command (only for text messages, not media with captions)
         const prefix = config.get('bot.prefix');
         const isCommand = text && text.startsWith(prefix) && !this.hasMedia(msg);
-
-        // Pre-process hooks
+        
+        // Execute message hooks
         await this.executeMessageHooks('pre_process', msg, text);
-
+        
         if (isCommand) {
             await this.handleCommand(msg, text);
         } else {
-            // Continue with normal non-command handling
+            // Handle non-command messages (including media)
             await this.handleNonCommandMessage(msg, text);
         }
 
-        // Post hooks
+        // Execute post-process hooks
         await this.executeMessageHooks('post_process', msg, text);
 
-        // Telegram sync
+        // FIXED: ALWAYS sync to Telegram if bridge is active (this was the main issue)
         if (this.bot.telegramBridge) {
             await this.bot.telegramBridge.syncMessage(msg, text);
         }
@@ -85,7 +88,7 @@ async processMessage(msg) {
             }
         }
     }
-
+    // New method to check if message has media
     hasMedia(msg) {
         return !!(
             msg.message?.imageMessage ||
@@ -109,209 +112,183 @@ async processMessage(msg) {
         }
     }
 
-    /**
-     * ✅ UPDATED: Enhanced LID support for v7
-     * Resolves user identity with LID/PN fallbacks
-     */
-    async resolveUserJid(msg) {
-        const chatJid = msg.key.remoteJid;
-        const isGroup = chatJid.endsWith('@g.us');
+async handleCommand(msg, text) {
+    const chatJid = msg.key.remoteJid;
+    const isGroup = chatJid.endsWith('@g.us');
+    const participantJid = msg.key.participant || chatJid;
+    const prefix = config.get('bot.prefix');
 
-        let executorJid;
+    // FIX: Define sender variable
+    const sender = chatJid;
 
-        if (msg.key.fromMe) {
-            executorJid = config.get('bot.owner') || this.bot.sock.user?.id;
-        } else if (isGroup) {
-            // In groups: prefer participant, fallback to participantAlt
-            executorJid = msg.key.participant || msg.key.participantAlt || chatJid;
-        } else {
-            // In DMs: prefer remoteJid, fallback to remoteJidAlt
-            executorJid = msg.key.remoteJid || msg.key.remoteJidAlt;
-        }
-
-        return { executorJid, chatJid, isGroup };
+    // 🧠 Figure out who executed the command
+    let executorJid;
+    if (msg.key.fromMe) {
+        executorJid = config.get('bot.owner') || this.bot.sock.user?.id;
+    } else if (isGroup) {
+        executorJid = participantJid;
+    } else {
+        executorJid = chatJid;
     }
 
-    /**
-     * ✅ UPDATED: Smart contact lookup with LID→PN resolution
-     */
-    async getContactInfo(executorJid) {
-        let contact = this.bot.store?.contacts?.[executorJid];
+    // 🪪 Resolve readable display name
+    const contact =
+        this.bot.store?.contacts?.[executorJid] ||
+        this.bot.store?.contacts?.[executorJid.split('@')[0] + '@s.whatsapp.net'];
+    const displayName =
+        contact?.name ||
+        contact?.notify ||
+        contact?.verifiedName ||
+        contact?.pushName ||
+        executorJid.split('@')[0];
 
-        // If not found and executorJid might be a LID, try to get PN version
-        if (!contact && !executorJid.endsWith('@s.whatsapp.net')) {
+    const args = text.slice(prefix.length).trim().split(/\s+/);
+    const command = args[0].toLowerCase();
+    const params = args.slice(1);
+
+    // Add presence and typing indicators for commands
+    try {
+        await this.bot.sock.readMessages([msg.key]);
+        await this.bot.sock.presenceSubscribe(sender);
+        await this.bot.sock.sendPresenceUpdate('composing', sender);
+    } catch (error) {
+        // Ignore presence errors
+    }
+
+    if (!this.checkPermissions(msg, command)) {
+        if (config.get('features.sendPermissionError', false)) {
             try {
-                const pn = await this.bot.sock.signalRepository?.lidMapping?.getPNForLID(executorJid);
-                if (pn) {
-                    contact = this.bot.store?.contacts?.[pn];
-                    logger.debug(`📞 Resolved LID to PN: ${executorJid} → ${pn}`);
-                }
-            } catch (err) {
-                logger.debug('Could not resolve LID to PN for contact lookup');
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
             }
+            return this.bot.sendMessage(sender, {
+                text: '❌ You don\'t have permission to use this command.'
+            });
         }
-
-        // Fallback: try with @s.whatsapp.net suffix
-        if (!contact) {
-            const baseJid = executorJid.split('@')[0] + '@s.whatsapp.net';
-            contact = this.bot.store?.contacts?.[baseJid];
+        try {
+            await this.bot.sock.sendPresenceUpdate('paused', sender);
+        } catch (error) {
+            // Ignore presence errors
         }
-
-        const displayName =
-            contact?.name ||
-            contact?.notify ||
-            contact?.verifiedName ||
-            contact?.pushName ||
-            executorJid.split('@')[0];
-
-        return { contact, displayName };
+        return; // silently ignore
     }
 
-    async handleCommand(msg, text) {
-        const prefix = config.get('bot.prefix');
-        const args = text.slice(prefix.length).trim().split(/\s+/);
-        const command = args[0].toLowerCase();
-        const params = args.slice(1);
+    const userId = executorJid.split('@')[0];
 
-        // ✅ Use new resolver
-        const { executorJid, chatJid, isGroup } = await this.resolveUserJid(msg);
-        const { contact, displayName } = await this.getContactInfo(executorJid);
+    if (config.get('features.rateLimiting')) {
+        const canExecute = await rateLimiter.checkCommandLimit(userId);
+        if (!canExecute) {
+            const remainingTime = await rateLimiter.getRemainingTime(userId);
+            try {
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
+            }
+            return this.bot.sendMessage(sender, {
+                text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
+            });
+        }
+    }
 
-        const sender = chatJid;
+    const handler = this.commandHandlers.get(command);
+    const respondToUnknown = config.get('features.respondToUnknownCommands', false);
+
+    if (handler) {
+        try {
+            // Always add ⏳ reaction for ALL commands
+            await this.bot.sock.sendMessage(sender, {
+                react: { key: msg.key, text: '⏳' }
+            });
+        } catch (error) {
+            // Ignore reaction errors
+        }
 
         try {
-            await this.bot.sock.readMessages([msg.key]);
-            await this.bot.sock.presenceSubscribe(sender);
-            await this.bot.sock.sendPresenceUpdate('composing', sender);
-        } catch {}
+            await handler.execute(msg, params, {
+                bot: this.bot,
+                sender: chatJid,
+                participant: executorJid,
+                isGroup: chatJid.endsWith('@g.us')
+            });
 
-        // ✅ UPDATED: Permission check with LID awareness
-        const hasPermission = await this.checkPermissions(msg, command, executorJid);
-
-        const handler = this.commandHandlers.get(command);
-        const respondToUnknown = config.get('features.respondToUnknownCommands', false);
-
-        // If command exists but user has no permission
-        if (!hasPermission && handler) {
-            const userId = executorJid.split('@')[0];
-            const ownerId = config.get('bot.owner').split('@')[0];
-            const isPrivate = config.get('features.mode') === 'private';
-
-            if (isPrivate && userId !== ownerId) {
-                try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-                return;
+            // Clear typing indicator on success
+            try {
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
             }
 
-            if (config.get('features.sendPermissionError', false)) {
-                try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-                // This is the problematic block, re-typed carefully
-                return this.bot.sendMessage(sender, {
-                    text: '❌ You don\'t have permission to use this command.'
-                });
-            }
-
-            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-            return;
-        }
-
-        // Valid command execution
-        if (handler) {
+            // Clear reaction on success for ALL commands
             try {
                 await this.bot.sock.sendMessage(sender, {
-                    react: { key: msg.key, text: '⏳' }
+                    react: { key: msg.key, text: '' }
                 });
-            } catch {}
-
-            try {
-                await handler.execute(msg, params, {
-                    bot: this.bot,
-                    sender: chatJid,
-                    participant: executorJid,
-                    isGroup
-                });
-
-                try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-                try {
-                    await this.bot.sock.sendMessage(sender, {
-                        react: { key: msg.key, text: '' }
-                    });
-                } catch {}
-
-                logger.info(`✅ Command executed: ${command} by ${displayName} (${executorJid})`);
-
-                if (this.bot.telegramBridge) {
-                    await this.bot.telegramBridge.logToTelegram(
-                        '📝 Command Executed',
-                        `Command: ${command}\nUser: ${displayName}\nJID: ${executorJid}\nChat: ${chatJid}`
-                    );
-                }
-
             } catch (error) {
-                try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-                try {
-                    await this.bot.sock.sendMessage(sender, {
-                        react: { key: msg.key, text: '❌' }
-                    });
-                } catch {}
-
-                logger.error(`❌ Command failed: ${command} | ${error.message}`);
-
-                if (!error._handledBySmartError) {
-                    await this.bot.sendMessage(sender, { text: `❌ Command failed: ${error.message}` });
-                }
-
-                if (this.bot.telegramBridge) {
-                    await this.bot.telegramBridge.logToTelegram(
-                        '❌ Command Error',
-                        `Command: ${command}\nError: ${error.message}\nUser: ${displayName}`
-                    );
-                }
+                // Ignore reaction errors
             }
 
-            return;
+            logger.info(`✅ Command executed: ${command} by ${displayName} (${executorJid})`);
+
+            if (this.bot.telegramBridge) {
+                await this.bot.telegramBridge.logToTelegram(
+                    '📝 Command Executed',
+                    `Command: ${command}\nUser: ${displayName}\nJID: ${executorJid}\nChat: ${chatJid}`
+                );
+            }
+
+        } catch (error) {
+            // Clear typing indicator on error
+            try {
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
+            }
+
+            // Keep ❌ reaction on error (don't clear it)
+            try {
+                await this.bot.sock.sendMessage(sender, {
+                    react: { key: msg.key, text: '❌' }
+                });
+            } catch (error) {
+                // Ignore reaction errors
+            }
+
+            logger.error(`❌ Command failed: ${command} | ${error.message || 'No message'}`);
+            logger.debug(error.stack || error);
+
+            if (!error._handledBySmartError && error?.message) {
+                await this.bot.sendMessage(sender, {
+                    text: `❌ Command failed: ${error.message}`
+                });
+            }
+
+            if (this.bot.telegramBridge) {
+                await this.bot.telegramBridge.logToTelegram('❌ Command Error',
+                    `Command: ${command}\nError: ${error.message}\nUser: ${displayName}`);
+            }
         }
 
-        // Unknown command handling
-        if (respondToUnknown) {
-            const userId = executorJid.split('@')[0];
-            const ownerId = config.get('bot.owner').split('@')[0];
-            const isPrivate = config.get('features.mode') === 'private';
-
-            if (isPrivate && userId !== ownerId) {
-                try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-                return;
-            }
-
-            const allCommands = Array.from(this.commandHandlers.keys());
-            const { best, bestScore } = this.findClosestCommand(command, allCommands);
-
-            let suggestText = `🚩 Unknown command: *${command}*`;
-            if (bestScore <= 3) {
-                suggestText += `\n Did you mean *${prefix}${best}* ?`;
-            }
-
-            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-            return this.bot.sendMessage(sender, { text: suggestText });
+    } else if (respondToUnknown) {
+        try {
+            await this.bot.sock.sendPresenceUpdate('paused', sender);
+        } catch (error) {
+            // Ignore presence errors
         }
-
-        try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+        await this.bot.sendMessage(sender, {
+            text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
+        });
+    } else {
+        try {
+            await this.bot.sock.sendPresenceUpdate('paused', sender);
+        } catch (error) {
+            // Ignore presence errors
+        }
     }
-
-    findClosestCommand(input, allCommands) {
-        let best = null;
-        let bestScore = Infinity;
-
-        for (const cmd of allCommands) {
-            const dist = levenshteinDistance(input, cmd);
-            if (dist < bestScore) {
-                bestScore = dist;
-                best = cmd;
-            }
-        }
-        return { best, bestScore };
-    }
+}
 
     async handleNonCommandMessage(msg, text) {
+        // Log media messages for debugging
         if (this.hasMedia(msg)) {
             const mediaType = this.getMediaType(msg);
             logger.debug(`📎 Media message received: ${mediaType} from ${msg.key.participant || msg.key.remoteJid}`);
@@ -331,96 +308,53 @@ async processMessage(msg) {
         return 'unknown';
     }
 
-    /**
-     * ✅ UPDATED: Enhanced permission check with LID→PN normalization
-     * This ensures owner/admin checks work regardless of LID vs PN format
-     */
-    async checkPermissions(msg, commandName, executorJid = null) {
-        if (!executorJid) {
-            const resolved = await this.resolveUserJid(msg);
-            executorJid = resolved.executorJid;
-        }
+checkPermissions(msg, commandName) {
+    const participant = msg.key.participant || msg.key.remoteJid;
+    const userId = participant.split('@')[0];
+    const ownerId = config.get('bot.owner').split('@')[0]; // Convert full JID to userId
+    const isOwner = userId === ownerId || msg.key.fromMe;
 
-        let userId = executorJid.split('@')[0];
+    const admins = config.get('bot.admins') || [];
 
-        // For reliable owner/admin comparison, try to normalize to PN
-        if (!executorJid.endsWith('@s.whatsapp.net')) {
-            try {
-                const pn = await this.bot.sock.signalRepository?.lidMapping?.getPNForLID(executorJid);
-                if (pn) {
-                    userId = pn.split('@')[0];
-                    logger.debug(`🔐 Normalized LID to PN for permission check: ${userId}`);
-                }
-            } catch (err) {
-                // Fallback to LID-based comparison
-                logger.debug('Using LID for permission check (no PN mapping available)');
+    const mode = config.get('features.mode');
+    if (mode === 'private' && !isOwner && !admins.includes(userId)) return false;
+
+    const blockedUsers = config.get('security.blockedUsers') || [];
+    if (blockedUsers.includes(userId)) return false;
+
+    const handler = this.commandHandlers.get(commandName);
+    if (!handler) return false;
+
+    const permission = handler.permissions || 'public';
+
+    switch (permission) {
+        case 'owner':
+            return isOwner;
+
+        case 'admin':
+            return isOwner || admins.includes(userId);
+
+        case 'public':
+            return true;
+
+        default:
+            if (Array.isArray(permission)) {
+                return permission.includes(userId);
             }
-        }
-
-        const ownerId = config.get('bot.owner')?.split('@')[0];
-        const isOwner = userId === ownerId;
-
-        const admins = config.get('bot.admins') || [];
-
-        const mode = config.get('features.mode');
-        if (mode === 'private' && !isOwner && !admins.includes(userId)) return false;
-
-        const blockedUsers = config.get('security.blockedUsers') || [];
-        if (blockedUsers.includes(userId)) return false;
-
-        const handler = this.commandHandlers.get(commandName);
-        if (!handler) return false;
-
-        const permission = handler.permissions || 'public';
-
-        switch (permission) {
-            case 'owner':
-                return isOwner;
-
-            case 'admin':
-                return isOwner || admins.includes(userId);
-
-            case 'public':
-                return true;
-
-            default:
-                if (Array.isArray(permission)) {
-                    return permission.includes(userId);
-                }
-                return false;
-        }
-    }
-
-    extractText(msg) {
-        return msg.message?.conversation || 
-                msg.message?.extendedTextMessage?.text || 
-                msg.message?.imageMessage?.caption ||
-                msg.message?.videoMessage?.caption || 
-                msg.message?.documentMessage?.caption ||
-                msg.message?.audioMessage?.caption ||
-                '';
+            return false;
     }
 }
 
-function levenshteinDistance(a, b) {
-    const matrix = Array(a.length + 1)
-        .fill(null)
-        .map(() => Array(b.length + 1).fill(null));
 
-    for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
-    for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
-
-    for (let i = 1; i <= a.length; i++) {
-        for (let j = 1; j <= b.length; j++) {
-            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-            matrix[i][j] = Math.min(
-                matrix[i - 1][j] + 1,
-                matrix[i][j - 1] + 1,
-                matrix[i - 1][j - 1] + cost
-            );
-        }
+    extractText(msg) {
+        return msg.message?.conversation || 
+               msg.message?.extendedTextMessage?.text || 
+               msg.message?.imageMessage?.caption ||
+               msg.message?.videoMessage?.caption || 
+               msg.message?.documentMessage?.caption ||
+               msg.message?.audioMessage?.caption ||
+               '';
     }
-    return matrix[a.length][b.length];
 }
 
 export default MessageHandler;
