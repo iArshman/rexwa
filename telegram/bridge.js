@@ -634,7 +634,7 @@ async sendStartMessage() {
                         participant: jid.endsWith('@g.us') ? jid : jid 
                     }
                 };
-                await this.(jid, dummyMsg);
+                await this.getOrCreateTopic(jid, dummyMsg);
                 
                 logger.info(`✅ Recreated topic for ${jid}`);
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -649,131 +649,60 @@ async sendStartMessage() {
         }
     }
 
-async syncMessage(whatsappMsg, text) {
-    if (!this.telegramBot || !config.get("telegram.enabled")) return;
+    async syncMessage(whatsappMsg, text) {
+        if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
-    // =====================================================
-    // ✅ Normalize sender (Fix duplicate topics)
-    // =====================================================
-    let sender = whatsappMsg.key.remoteJid;
-
-    // 1. Resolve LID → PN
-    sender = await this.resolveToPN(sender);
-
-    // 2. Remove ":0" suffix always
-    if (sender.endsWith("@s.whatsapp.net")) {
-        sender = this.normalizePhone(sender) + "@s.whatsapp.net";
-    }
-
-    // =====================================================
-    // ✅ Normalize participant also (important for groups)
-    // =====================================================
-    let participant = whatsappMsg.key.participant || sender;
-
-    participant = await this.resolveToPN(participant);
-
-    if (participant.endsWith("@s.whatsapp.net")) {
-        participant = this.normalizePhone(participant) + "@s.whatsapp.net";
-    }
-
-    const isFromMe = whatsappMsg.key.fromMe;
-
-    // =====================================================
-    // ✅ Status messages
-    // =====================================================
-    if (sender === "status@broadcast") {
-        await this.handleStatusMessage(whatsappMsg, text);
-        return;
-    }
-
-    // =====================================================
-    // ✅ Outgoing messages (from me)
-    // =====================================================
-    if (isFromMe) {
-        const existingTopicId = this.chatMappings.get(sender);
-        if (existingTopicId) {
-            await this.syncOutgoingMessage(
-                whatsappMsg,
-                text,
-                existingTopicId,
-                sender
-            );
+        const sender = whatsappMsg.key.remoteJid;
+        const participant = whatsappMsg.key.participant || sender;
+        const isFromMe = whatsappMsg.key.fromMe;
+        
+        if (sender === 'status@broadcast') {
+            await this.handleStatusMessage(whatsappMsg, text);
+            return;
         }
-        return;
-    }
-
-    // =====================================================
-    // ✅ Ensure user mapping uses normalized participant
-    // =====================================================
-    await this.createUserMapping(participant, whatsappMsg);
-
-    // =====================================================
-    // ✅ Topic creation uses normalized sender
-    // =====================================================
-    const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
-
-    // =====================================================
-    // ✅ Media Handling
-    // =====================================================
-    if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-        await this.handleWhatsAppMedia(whatsappMsg, "video_note", topicId);
-
-    } else if (whatsappMsg.message?.imageMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, "image", topicId);
-
-    } else if (whatsappMsg.message?.videoMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, "video", topicId);
-
-    } else if (whatsappMsg.message?.audioMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, "audio", topicId);
-
-    } else if (whatsappMsg.message?.documentMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, "document", topicId);
-
-    } else if (whatsappMsg.message?.stickerMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, "sticker", topicId);
-
-    } else if (whatsappMsg.message?.locationMessage) {
-        await this.handleWhatsAppLocation(whatsappMsg, topicId);
-
-    } else if (whatsappMsg.message?.contactMessage) {
-        await this.handleWhatsAppContact(whatsappMsg, topicId);
-
-    }
-
-    // =====================================================
-    // ✅ Text Messages
-    // =====================================================
-    else if (text) {
-
-        let messageText = text;
-
-        // Group participant name display
-        if (sender.endsWith("@g.us") && participant !== sender) {
-
-            const senderPhone = this.normalizePhone(participant);
-
-            // Only saved contact OR fallback phone
-            const senderName =
-                this.contactMappings.get(senderPhone) || `+${senderPhone}`;
-
-            messageText = `👤 ${senderName}:\n${text}`;
+        
+        if (isFromMe) {
+            const existingTopicId = this.chatMappings.get(sender);
+            if (existingTopicId) {
+                await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
+            }
+            return;
+        }
+        
+        await this.createUserMapping(participant, whatsappMsg);
+        const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
+        
+        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
+        } else if (whatsappMsg.message?.imageMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
+        } else if (whatsappMsg.message?.videoMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
+        } else if (whatsappMsg.message?.audioMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
+        } else if (whatsappMsg.message?.documentMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
+        } else if (whatsappMsg.message?.stickerMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
+        } else if (whatsappMsg.message?.locationMessage) { 
+            await this.handleWhatsAppLocation(whatsappMsg, topicId);
+        } else if (whatsappMsg.message?.contactMessage) { 
+            await this.handleWhatsAppContact(whatsappMsg, topicId);
+        } else if (text) {
+            let messageText = text;
+            if (sender.endsWith('@g.us') && participant !== sender) {
+                const senderPhone = participant.split('@')[0];
+                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+                messageText = `👤 ${senderName}:\n${text}`;
+            }
+            
+            await this.sendSimpleMessage(topicId, messageText, sender);
         }
 
-        await this.sendSimpleMessage(topicId, messageText, sender);
+        if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
+            this.queueMessageForReadReceipt(sender, whatsappMsg.key);
+        }
     }
-
-    // =====================================================
-    // ✅ Read Receipts Queue
-    // =====================================================
-    if (
-        whatsappMsg.key?.id &&
-        config.get("telegram.features.readReceipts") !== false
-    ) {
-        this.queueMessageForReadReceipt(sender, whatsappMsg.key);
-    }
-}
-
 
 async handleStatusMessage(whatsappMsg, text) {
     try {
@@ -1029,33 +958,23 @@ getMediaType(msg) {
         logger.debug(`👤 Created user mapping: ${userName || userPhone} (${userPhone})`);
     }
 
- async getOrCreateTopic(chatJid, whatsappMsg) {
 
-    // =====================================================
-    // ✅ STEP 1: Resolve LID → PN
-    // =====================================================
+
+    async getOrCreateTopic(chatJid, whatsappMsg) {
+
+    // ✅ Step 1: Resolve LID → PN
     chatJid = await this.resolveToPN(chatJid);
 
-    // =====================================================
-    // ✅ STEP 2: Normalize ":0" suffix always
-    // Example: 12103991207:0@s.whatsapp.net → 12103991207@s.whatsapp.net
-    // =====================================================
-    if (chatJid.endsWith("@s.whatsapp.net")) {
-        const phone = this.normalizePhone(chatJid);
-        chatJid = phone + "@s.whatsapp.net";
-    }
-
-    // =====================================================
-    // ✅ STEP 3: If mapping exists, verify topic still exists
-    // =====================================================
+    // ✅ Topic already exists?
     if (this.chatMappings.has(chatJid)) {
 
         const topicId = this.chatMappings.get(chatJid);
 
+        // Verify topic exists
         const exists = await this.verifyTopicExists(topicId);
         if (exists) return topicId;
 
-        // Topic deleted → cleanup
+        // Deleted topic cleanup
         logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
 
         this.chatMappings.delete(chatJid);
@@ -1067,16 +986,12 @@ getMediaType(msg) {
         });
     }
 
-    // =====================================================
-    // ✅ STEP 4: Prevent duplicate creation race condition
-    // =====================================================
+    // Prevent duplicate creation
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // =====================================================
-    // ✅ STEP 5: Create topic promise
-    // =====================================================
+    // ✅ Create new topic
     const creationPromise = (async () => {
 
         const chatId = config.get("telegram.chatId");
@@ -1089,81 +1004,47 @@ getMediaType(msg) {
             const isGroup = chatJid.endsWith("@g.us");
             const isStatus = chatJid === "status@broadcast";
             const isCall = chatJid === "call@broadcast";
-            const isChannel = isJidNewsletter(chatJid);
 
             let topicName;
             let iconColor = 0x7ABA3C;
 
-            // ===============================
-            // ✅ STATUS TOPIC
-            // ===============================
+            // Special topics
             if (isStatus) {
                 topicName = "📊 Status Updates";
                 iconColor = 0xFF6B35;
-            }
 
-            // ===============================
-            // ✅ CALL TOPIC
-            // ===============================
-            else if (isCall) {
+            } else if (isCall) {
                 topicName = "📞 Call Logs";
                 iconColor = 0xFF4757;
-            }
 
-            // ===============================
-            // ✅ GROUP TOPIC (use subject)
-            // ===============================
-            else if (isGroup) {
+            } else if (isGroup) {
+                // Group subject
                 try {
                     const meta = await this.whatsappBot.sock.groupMetadata(chatJid);
-                    topicName = meta.subject || "Group Chat";
+                    topicName = meta.subject;
                 } catch {
                     topicName = "Group Chat";
                 }
-
                 iconColor = 0x6FB9F0;
-            }
 
-            // ===============================
-            // ✅ NEWSLETTER / CHANNEL TOPIC
-            // ===============================
-            else if (isChannel) {
+            } else {
+                // ✅ ONLY 2 LEVELS (Saved Contact OR Phone)
 
-                // Channels have no phone → pushName best
-                topicName =
-                    whatsappMsg?.pushName ||
-                    "📢 WhatsApp Channel";
-
-                iconColor = 0xFFD93D;
-            }
-
-            // ===============================
-            // ✅ NORMAL DM TOPIC
-            // ===============================
-            else {
-
-                // Only saved contact OR phone number
                 const phone = this.normalizePhone(chatJid);
 
                 // Level 1: Saved contact name
                 const savedName = this.contactMappings.get(phone);
 
-                // Level 2 fallback: phone only
+                // Level 2 fallback: phone number
                 topicName = savedName || `+${phone}`;
-
-                iconColor = 0x7ABA3C;
             }
 
-            // =====================================================
-            // ✅ Create Telegram Forum Topic
-            // =====================================================
+            // Create Telegram topic
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
-            // =====================================================
-            // ✅ Save mapping ALWAYS on normalized JID
-            // =====================================================
+            // Save mapping
             await this.saveChatMapping(chatJid, topic.message_thread_id);
 
             logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
@@ -1184,8 +1065,7 @@ getMediaType(msg) {
     return await creationPromise;
 }
 
-// ✅ Resolve LID → PN 
-
+// ✅ Resolve LID → PN (so lid UI me kabhi na aaye)
 async resolveToPN(jid) {
     if (!jid) return jid;
 
