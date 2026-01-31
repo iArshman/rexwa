@@ -1037,6 +1037,19 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
     return await creationPromise;
 }
 
+async verifyTopicExists(topicId) {
+    try {
+        const chatId = config.get("telegram.chatId");
+
+        // ✅ Real topic check
+        await this.telegramBot.getForumTopic(chatId, topicId);
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 
 // ✅ Resolve LID → PN (so lid UI me kabhi na aaye)
 async resolveToPN(jid) {
