@@ -960,18 +960,31 @@ getMediaType(msg) {
 
 
 
-    async getOrCreateTopic(chatJid, whatsappMsg) {
-    // ✅ Step 1: Normalize the JID (remove :0 suffix) BEFORE resolving LID
+  async getOrCreateTopic(chatJid, whatsappMsg) {
+    // ✅ Step 1: Normalize the JID (remove :0 suffix)
     const phone = this.normalizePhone(chatJid);
     const normalizedJid = phone ? `${phone}@s.whatsapp.net` : chatJid;
     
-    // ✅ Step 2: Resolve LID → PN
-    const resolvedJid = await this.resolveToPN(normalizedJid);
+    // ✅ Step 2: Resolve LID → PN using Baileys signal repository
+    let resolvedJid = normalizedJid;
+    
+    // If it's a LID, convert to PN using the proper method
+    if (normalizedJid.includes('@lid')) {
+        try {
+            const pn = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(normalizedJid);
+            if (pn) {
+                resolvedJid = pn;
+                logger.info(`🔄 Resolved LID to PN: ${normalizedJid} → ${pn}`);
+            }
+        } catch (err) {
+            logger.warn(`⚠️ Could not resolve LID to PN: ${err.message}`);
+        }
+    }
 
     // ✅ Step 3: Check if topic already exists in our mappings
     if (this.chatMappings.has(resolvedJid)) {
         const topicId = this.chatMappings.get(resolvedJid);
-        return topicId; // Don't verify, just use it
+        return topicId;
     }
 
     // ✅ Step 4: Check if we're already creating this topic
@@ -1012,7 +1025,7 @@ getMediaType(msg) {
                 }
                 iconColor = 0x6FB9F0;
             } else {
-                // ✅ Individual chat: Use saved contact name OR phone number
+                // ✅ Individual chat: Extract phone number from PN JID
                 const phoneNumber = this.normalizePhone(resolvedJid);
                 const savedName = this.contactMappings.get(phoneNumber);
                 topicName = savedName || `+${phoneNumber}`;
@@ -1023,7 +1036,7 @@ getMediaType(msg) {
                 icon_color: iconColor
             });
 
-            // Save mapping with normalized JID
+            // Save mapping with PN JID (not LID)
             await this.saveChatMapping(resolvedJid, topic.message_thread_id);
 
             logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
@@ -1041,6 +1054,8 @@ getMediaType(msg) {
     this.creatingTopics.set(resolvedJid, creationPromise);
     return await creationPromise;
 }
+
+    
 // ✅ Resolve LID → PN (so lid UI me kabhi na aaye)
 async resolveToPN(jid) {
     if (!jid) return jid;
