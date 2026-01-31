@@ -960,63 +960,83 @@ getMediaType(msg) {
 
 
 
-  async getOrCreateTopic(chatJid, whatsappMsg) {
-    // ✅ Step 1: Normalize the JID (remove :0 suffix)
-    const phone = this.normalizePhone(chatJid);
-    const normalizedJid = phone ? `${phone}@s.whatsapp.net` : chatJid;
+ async getOrCreateTopic(chatJid, whatsappMsg) {
+    // Step 1: Normalize (remove :0 suffix)
+    const rawPhone = chatJid.split("@")[0].split(":")[0];
+    const domain = chatJid.includes("@") ? chatJid.split("@")[1] : "s.whatsapp.net";
+
+    // Step 2: If it's a LID, resolve to PN FIRST
+    let resolvedJid;
     
-    // ✅ Step 2: Resolve LID → PN using Baileys signal repository
-    let resolvedJid = normalizedJid;
-    
-    // If it's a LID, convert to PN using the proper method
-    if (normalizedJid.includes('@lid')) {
+    if (domain === "lid") {
+        // This is a LID - must convert to PN
         try {
-            const pn = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(normalizedJid);
-            if (pn) {
-                resolvedJid = pn;
-                logger.info(`🔄 Resolved LID to PN: ${normalizedJid} → ${pn}`);
+            const lidJid = `${rawPhone}@lid`;
+            const pnJid = await this.whatsappBot.sock?.signalRepository?.lidMapping?.getPNForLID(lidJid);
+            
+            if (pnJid) {
+                resolvedJid = pnJid;
+                logger.debug(`LID resolved: ${lidJid} -> ${pnJid}`);
+            } else {
+                logger.warn(`Could not resolve LID ${lidJid} to PN, using as-is`);
+                resolvedJid = `${rawPhone}@s.whatsapp.net`;
             }
         } catch (err) {
-            logger.warn(`⚠️ Could not resolve LID to PN: ${err.message}`);
+            logger.warn(`LID resolution error: ${err.message}`);
+            resolvedJid = `${rawPhone}@s.whatsapp.net`;
         }
+    } else if (domain === "g.us") {
+        resolvedJid = `${rawPhone}@g.us`;
+    } else {
+        resolvedJid = `${rawPhone}@s.whatsapp.net`;
     }
 
-    // ✅ Step 3: Check if topic already exists in our mappings
+    // Step 3: Check if topic already exists for this resolved JID
     if (this.chatMappings.has(resolvedJid)) {
         const topicId = this.chatMappings.get(resolvedJid);
-        return topicId;
+        
+        // Verify topic still exists in Telegram
+        const exists = await this.verifyTopicExists(topicId);
+        if (exists) return topicId;
+
+        // Topic was deleted, clean up
+        logger.warn(`Topic ${topicId} deleted for ${resolvedJid}, recreating...`);
+        this.chatMappings.delete(resolvedJid);
+        this.profilePicCache.delete(resolvedJid);
+        await this.collection.deleteOne({
+            type: "chat",
+            "data.whatsappJid": resolvedJid
+        });
     }
 
-    // ✅ Step 4: Check if we're already creating this topic
+    // Step 4: Prevent duplicate creation
     if (this.creatingTopics.has(resolvedJid)) {
         return await this.creatingTopics.get(resolvedJid);
     }
 
-    // ✅ Step 5: Create new topic
+    // Step 5: Create new topic
     const creationPromise = (async () => {
         const chatId = config.get("telegram.chatId");
         if (!chatId) {
-            logger.error("❌ Telegram chat ID missing");
+            logger.error("Telegram chat ID missing");
             return null;
         }
 
         try {
             const isGroup = resolvedJid.endsWith("@g.us");
-            const isStatus = resolvedJid === "status@broadcast";
-            const isCall = resolvedJid === "call@broadcast";
+            const isStatus = chatJid === "status@broadcast";
+            const isCall = chatJid === "call@broadcast";
 
             let topicName;
             let iconColor = 0x7ABA3C;
 
-            // Special topics
             if (isStatus) {
-                topicName = "📊 Status Updates";
+                topicName = "Status Updates";
                 iconColor = 0xFF6B35;
             } else if (isCall) {
-                topicName = "📞 Call Logs";
+                topicName = "Call Logs";
                 iconColor = 0xFF4757;
             } else if (isGroup) {
-                // Group subject
                 try {
                     const meta = await this.whatsappBot.sock.groupMetadata(resolvedJid);
                     topicName = meta.subject;
@@ -1025,10 +1045,10 @@ getMediaType(msg) {
                 }
                 iconColor = 0x6FB9F0;
             } else {
-                // ✅ Individual chat: Extract phone number from PN JID
-                const phoneNumber = this.normalizePhone(resolvedJid);
-                const savedName = this.contactMappings.get(phoneNumber);
-                topicName = savedName || `+${phoneNumber}`;
+                // Individual chat - use phone from resolved PN JID
+                const phone = resolvedJid.split("@")[0];
+                const savedName = this.contactMappings.get(phone);
+                topicName = savedName || `+${phone}`;
             }
 
             // Create Telegram topic
@@ -1036,15 +1056,14 @@ getMediaType(msg) {
                 icon_color: iconColor
             });
 
-            // Save mapping with PN JID (not LID)
+            // Save mapping with resolved PN JID
             await this.saveChatMapping(resolvedJid, topic.message_thread_id);
 
-            logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
-
+            logger.info(`Topic created: "${topicName}" (${topic.message_thread_id})`);
             return topic.message_thread_id;
 
         } catch (err) {
-            logger.error("❌ Topic creation failed:", err.message);
+            logger.error("Topic creation failed:", err.message);
             return null;
         } finally {
             this.creatingTopics.delete(resolvedJid);
