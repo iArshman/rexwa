@@ -961,39 +961,26 @@ getMediaType(msg) {
 
 
     async getOrCreateTopic(chatJid, whatsappMsg) {
+    // ✅ Step 1: Normalize the JID (remove :0 suffix) BEFORE resolving LID
+    const phone = this.normalizePhone(chatJid);
+    const normalizedJid = phone ? `${phone}@s.whatsapp.net` : chatJid;
+    
+    // ✅ Step 2: Resolve LID → PN
+    const resolvedJid = await this.resolveToPN(normalizedJid);
 
-    // ✅ Step 1: Resolve LID → PN
-    chatJid = await this.resolveToPN(chatJid);
-
-    // ✅ Topic already exists?
-    if (this.chatMappings.has(chatJid)) {
-
-        const topicId = this.chatMappings.get(chatJid);
-
-        // Verify topic exists
-        const exists = await this.verifyTopicExists(topicId);
-        if (exists) return topicId;
-
-        // Deleted topic cleanup
-        logger.warn(`🗑️ Topic ${topicId} deleted for ${chatJid}, recreating...`);
-
-        this.chatMappings.delete(chatJid);
-        this.profilePicCache.delete(chatJid);
-
-        await this.collection.deleteOne({
-            type: "chat",
-            "data.whatsappJid": chatJid
-        });
+    // ✅ Step 3: Check if topic already exists in our mappings
+    if (this.chatMappings.has(resolvedJid)) {
+        const topicId = this.chatMappings.get(resolvedJid);
+        return topicId; // Don't verify, just use it
     }
 
-    // Prevent duplicate creation
-    if (this.creatingTopics.has(chatJid)) {
-        return await this.creatingTopics.get(chatJid);
+    // ✅ Step 4: Check if we're already creating this topic
+    if (this.creatingTopics.has(resolvedJid)) {
+        return await this.creatingTopics.get(resolvedJid);
     }
 
-    // ✅ Create new topic
+    // ✅ Step 5: Create new topic
     const creationPromise = (async () => {
-
         const chatId = config.get("telegram.chatId");
         if (!chatId) {
             logger.error("❌ Telegram chat ID missing");
@@ -1001,9 +988,9 @@ getMediaType(msg) {
         }
 
         try {
-            const isGroup = chatJid.endsWith("@g.us");
-            const isStatus = chatJid === "status@broadcast";
-            const isCall = chatJid === "call@broadcast";
+            const isGroup = resolvedJid.endsWith("@g.us");
+            const isStatus = resolvedJid === "status@broadcast";
+            const isCall = resolvedJid === "call@broadcast";
 
             let topicName;
             let iconColor = 0x7ABA3C;
@@ -1012,31 +999,23 @@ getMediaType(msg) {
             if (isStatus) {
                 topicName = "📊 Status Updates";
                 iconColor = 0xFF6B35;
-
             } else if (isCall) {
                 topicName = "📞 Call Logs";
                 iconColor = 0xFF4757;
-
             } else if (isGroup) {
                 // Group subject
                 try {
-                    const meta = await this.whatsappBot.sock.groupMetadata(chatJid);
+                    const meta = await this.whatsappBot.sock.groupMetadata(resolvedJid);
                     topicName = meta.subject;
                 } catch {
                     topicName = "Group Chat";
                 }
                 iconColor = 0x6FB9F0;
-
             } else {
-                // ✅ ONLY 2 LEVELS (Saved Contact OR Phone)
-
-                const phone = this.normalizePhone(chatJid);
-
-                // Level 1: Saved contact name
-                const savedName = this.contactMappings.get(phone);
-
-                // Level 2 fallback: phone number
-                topicName = savedName || `+${phone}`;
+                // ✅ Individual chat: Use saved contact name OR phone number
+                const phoneNumber = this.normalizePhone(resolvedJid);
+                const savedName = this.contactMappings.get(phoneNumber);
+                topicName = savedName || `+${phoneNumber}`;
             }
 
             // Create Telegram topic
@@ -1044,8 +1023,8 @@ getMediaType(msg) {
                 icon_color: iconColor
             });
 
-            // Save mapping
-            await this.saveChatMapping(chatJid, topic.message_thread_id);
+            // Save mapping with normalized JID
+            await this.saveChatMapping(resolvedJid, topic.message_thread_id);
 
             logger.info(`🆕 Topic created: "${topicName}" (${topic.message_thread_id})`);
 
@@ -1054,17 +1033,14 @@ getMediaType(msg) {
         } catch (err) {
             logger.error("❌ Topic creation failed:", err.message);
             return null;
-
         } finally {
-            this.creatingTopics.delete(chatJid);
+            this.creatingTopics.delete(resolvedJid);
         }
-
     })();
 
-    this.creatingTopics.set(chatJid, creationPromise);
+    this.creatingTopics.set(resolvedJid, creationPromise);
     return await creationPromise;
 }
-
 // ✅ Resolve LID → PN (so lid UI me kabhi na aaye)
 async resolveToPN(jid) {
     if (!jid) return jid;
