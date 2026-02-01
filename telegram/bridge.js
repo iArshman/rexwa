@@ -1,22 +1,18 @@
-import TelegramBot from 'node-telegram-bot-api';
-import TelegramCommands from './commands.js'; 
-import config from '../config.js';       
-import logger from '../core/logger.js';   
-import { connectDb } from '../utils/db.js';
-import fs from 'fs-extra';
-import path from 'path';
-import axios from 'axios';
-import sharp from 'sharp';
-import mime from 'mime-types';
-import { downloadContentFromMessage } from '@whiskeysockets/baileys';
-import ffmpeg from 'fluent-ffmpeg';
-import { Sticker, StickerTypes } from 'wa-sticker-formatter';
-import { exec } from 'child_process';
-import qrcode from 'qrcode';
-
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const TelegramBot = require('node-telegram-bot-api');
+const TelegramCommands = require('./commands');
+const config = require('../config');
+const logger = require('../Core/logger');
+const { connectDb } = require('../utils/db');
+const fs = require('fs-extra');
+const path = require('path');
+const axios = require('axios');
+const sharp = require('sharp');
+const mime = require('mime-types');
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+const ffmpeg = require('fluent-ffmpeg');
+const { Sticker, StickerTypes } = require('wa-sticker-formatter');
+const { exec } = require('child_process');
+const qrcode = require('qrcode');
 
 
 class TelegramBridge {
@@ -379,7 +375,7 @@ async clearFilters() {
 
     this.telegramBot.on('message', this.wrapHandler(async (msg) => {
         const chatType = msg.chat.type;
-     
+
         // ✅ 1. Private chat (user DMs the bot)
         if (chatType === 'private') {
             const chatId = msg.chat.id;
@@ -606,6 +602,49 @@ async sendStartMessage() {
     }
 
     
+     async recreateMissingTopics() {
+        try {
+            logger.info('🔄 Checking for missing topics...');
+            const toRecreate = [];
+            
+            for (const [jid, topicId] of this.chatMappings.entries()) {
+                const exists = await this.verifyTopicExists(topicId);
+                if (!exists) {
+                    logger.warn(`🗑️ Topic ${topicId} for ${jid} was deleted, will recreate...`);
+                    toRecreate.push(jid);
+                }
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            
+            for (const jid of toRecreate) {
+                this.chatMappings.delete(jid);
+                this.profilePicCache.delete(jid); // Clear profile pic cache
+                await this.collection.deleteOne({ 
+                    type: 'chat', 
+                    'data.whatsappJid': jid 
+                });
+                
+                const dummyMsg = {
+                    key: { 
+                        remoteJid: jid, 
+                        participant: jid.endsWith('@g.us') ? jid : jid 
+                    }
+                };
+                await this.getOrCreateTopic(jid, dummyMsg);
+                
+                logger.info(`✅ Recreated topic for ${jid}`);
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
+            if (toRecreate.length > 0) {
+                logger.info(`✅ Recreated ${toRecreate.length} missing topics`);
+            }
+            
+        } catch (error) {
+            logger.error('❌ Error recreating missing topics:', error);
+        }
+    }
+
     async syncMessage(whatsappMsg, text) {
         if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
@@ -915,193 +954,82 @@ getMediaType(msg) {
         logger.debug(`👤 Created user mapping: ${userName || userPhone} (${userPhone})`);
     }
 
-
-
-async getOrCreateTopic(chatJid, whatsappMsg) {
-
-    // ✅ Resolve LID → PN
-    chatJid = await this.resolveToPN(chatJid);
-
-    // ✅ Normalize device suffix (:0 / :1)
-    chatJid = chatJid.replace(/:\d+@/, "@");
-
-    const chatId = config.get("telegram.chatId");
-    if (!chatId) {
-        logger.error("❌ Telegram chatId missing");
-        return null;
-    }
-
-    // =====================================================
-    // ✅ CASE 1: Already mapped → VERIFY topic still exists
-    // =====================================================
+   async getOrCreateTopic(chatJid, whatsappMsg) {
+    // ✅ If topic already cached, return
     if (this.chatMappings.has(chatJid)) {
-
-        const topicId = this.chatMappings.get(chatJid);
-
-        try {
-            // ✅ Best possible topic check
-            await this.telegramBot.sendChatAction(chatId, "typing", {
-                message_thread_id: topicId
-            });
-
-            // ✅ Topic exists
-            return topicId;
-
-        } catch (err) {
-
-            // ✅ RAW ERROR PRINT (NO STRING MATCH)
-            logger.error("❌ Topic verify failed RAW:");
-            console.log(err);
-
-            if (err.response?.data) {
-                logger.error("📩 Telegram RAW Response:", err.response.data);
-            }
-
-            // 🗑️ Topic deleted → remove mapping
-            logger.warn(`🗑️ Topic ${topicId} missing. Removing mapping...`);
-
-            this.chatMappings.delete(chatJid);
-            this.profilePicCache.delete(chatJid);
-
-            await this.collection.deleteOne({
-                type: "chat",
-                "data.whatsappJid": chatJid
-            });
-        }
+        return this.chatMappings.get(chatJid);
     }
 
-    // =====================================================
-    // ✅ CASE 2: Prevent duplicate creation spam
-    // =====================================================
+    // ✅ If another creation is in progress, wait for it
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
 
-    // =====================================================
-    // ✅ CASE 3: Create fresh topic
-    // =====================================================
     const creationPromise = (async () => {
+        const chatId = config.get('telegram.chatId');
+        if (!chatId || chatId.includes('YOUR_CHAT_ID')) {
+            logger.error('❌ Telegram chat ID not configured');
+            return null;
+        }
+
         try {
+            const isGroup = chatJid.endsWith('@g.us');
+            const isStatus = chatJid === 'status@broadcast';
+            const isCall = chatJid === 'call@broadcast';
+            
+            let topicName, iconColor = 0x7ABA3C;
 
-            const isGroup  = chatJid.endsWith("@g.us");
-            const isStatus = chatJid === "status@broadcast";
-            const isCall   = chatJid === "call@broadcast";
-
-            let topicName;
-            let iconColor = 0x6FB9F0;
-
-            // ✅ Status topic
             if (isStatus) {
-                topicName = "📊 Status Updates";
+                topicName = `📊 Status Updates`;
                 iconColor = 0xFF6B35;
-
-            // ✅ Call topic
             } else if (isCall) {
-                topicName = "📞 Call Logs";
+                topicName = `📞 Call Logs`;
                 iconColor = 0xFF4757;
-
-            // ✅ Group topic
             } else if (isGroup) {
                 try {
-                    const meta = await this.whatsappBot.sock.groupMetadata(chatJid);
-                    topicName = meta.subject || "Group Chat";
-                } catch (e) {
-                    logger.warn("⚠️ Group metadata failed:", e.message);
-                    topicName = "Group Chat";
+                    const groupMeta = await this.whatsappBot.sock.groupMetadata(chatJid);
+                    topicName = groupMeta.subject;
+                } catch {
+                    topicName = `Group Chat`;
                 }
-
-            // ✅ Private contact topic
+                iconColor = 0x6FB9F0;
             } else {
-                const phone = this.normalizePhone(chatJid);
-                const savedName = this.contactMappings.get(phone);
-
-                topicName = savedName || `+${phone}`;
-                iconColor = 0x7ABA3C;
+                const phone = chatJid.split('@')[0];
+                const contactName = this.contactMappings.get(phone);
+                topicName = contactName || `+${phone}`;
             }
 
-            // ✅ Create Telegram Forum Topic
-            const topic = await this.telegramBot.createForumTopic(
-                chatId,
-                topicName,
-                { icon_color: iconColor }
-            );
+            const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
+                icon_color: iconColor
+            });
 
-            const newTopicId = topic.message_thread_id;
-
-            // ✅ Save mapping
-            await this.saveChatMapping(chatJid, newTopicId);
-
-            logger.info(`🆕 Topic created: "${topicName}" (${newTopicId})`);
-
-            return newTopicId;
-
-        } catch (err) {
-
-            // ✅ RAW ERROR PRINT
-            logger.error("❌ Topic creation failed RAW:");
-            console.log(err);
-
-            if (err.response?.data) {
-                logger.error("📩 Telegram RAW Response:", err.response.data);
+            let profilePicUrl = null;
+            if (!isStatus && !isCall) {
+                try {
+                    profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(chatJid, 'image');
+                } catch {}
             }
 
+            await this.saveChatMapping(chatJid, topic.message_thread_id, profilePicUrl);
+            logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
+
+            if (!isStatus && !isCall && config.get('telegram.features.welcomeMessage')) {
+                await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, profilePicUrl);
+            }
+
+            return topic.message_thread_id;
+
+        } catch (error) {
+            logger.error('❌ Failed to create Telegram topic:', error);
             return null;
-
         } finally {
-            this.creatingTopics.delete(chatJid);
+            this.creatingTopics.delete(chatJid); // ✅ Cleanup after done
         }
     })();
 
     this.creatingTopics.set(chatJid, creationPromise);
-
     return await creationPromise;
 }
-
-
-
-// ✅ Resolve LID → PN (so lid UI me kabhi na aaye)
-async resolveToPN(jid) {
-    if (!jid) return jid;
-
-    // Already normal PN or group
-    if (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@g.us")) {
-        return jid;
-    }
-
-    // Convert LID → PN
-    try {
-        const pn =
-            await this.whatsappBot.sock?.signalRepository?.lidMapping?.getPNForLID(
-                jid
-            );
-
-        if (pn) {
-            logger.debug(`📞 Bridge resolved LID → PN: ${jid} → ${pn}`);
-            return pn;
-        }
-    } catch (err) {
-        logger.debug("❌ Bridge could not resolve LID → PN");
-    }
-
-    return jid;
-}
-
-
-// ✅ Normalize phone number (removes :0 device suffix)
-normalizePhone(jid) {
-    if (!jid) return "";
-
-    // Remove domain part
-    let phone = jid.split("@")[0];
-
-    // Remove ":0" or ":1" suffix
-    if (phone.includes(":")) {
-        phone = phone.split(":")[0];
-    }
-
-    return phone;
-}
-
     async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUrl = null) {
         try {
             const chatId = config.get('telegram.chatId');
@@ -1950,53 +1878,63 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         }
     }
 
-async sendSimpleMessage(topicId, text, sender) {
-    const chatId = config.get("telegram.chatId");
+    async sendSimpleMessage(topicId, text, sender) {
+    const chatId = config.get('telegram.chatId');
 
     try {
-        // ✅ Send into mapped topic
-        const sent = await this.telegramBot.sendMessage(chatId, text, {
+        const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
             message_thread_id: topicId
         });
+        return sentMessage.message_id;
 
-        return sent.message_id;
+    } catch (error) {
+        const desc = error.response?.data?.description || error.message;
 
-    } catch (err) {
-        const desc = err.response?.data?.description || err.message;
+        if (desc.includes('message thread not found')) {
+            logger.warn(`🗑️ Topic ID ${topicId} for sender ${sender} is missing. Recreating...`);
 
-        // ✅ Only recreate when Telegram реально errors
-        if (desc.includes("message thread not found")) {
+            // Find JID from topic ID
+            const jidEntry = [...this.chatMappings.entries()].find(([jid, tId]) => tId === topicId);
+            const jid = jidEntry?.[0];
 
-            logger.warn(`🗑️ Topic ${topicId} deleted. Recreating for ${sender}...`);
+            if (jid) {
+                // Clean mapping
+                this.chatMappings.delete(jid);
+                this.profilePicCache.delete(jid);
+                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
 
-            // Remove old mapping
-            this.chatMappings.delete(sender);
-            this.profilePicCache.delete(sender);
+                // Recreate topic
+                const dummyMsg = {
+                    key: {
+                        remoteJid: jid,
+                        participant: jid.endsWith('@g.us') ? jid : jid
+                    }
+                };
+                const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
 
-            await this.collection.deleteOne({
-                type: "chat",
-                "data.whatsappJid": sender
-            });
-
-            // Create new topic
-            const newTopicId = await this.getOrCreateTopic(sender, {
-                key: { remoteJid: sender, participant: sender }
-            });
-
-            if (!newTopicId) return null;
-
-            // Retry send in new topic
-            const retry = await this.telegramBot.sendMessage(chatId, text, {
-                message_thread_id: newTopicId
-            });
-
-            return retry.message_id;
+                if (newTopicId) {
+                    // 🔁 RETRY original message
+                    try {
+                        const retryMessage = await this.telegramBot.sendMessage(chatId, text, {
+                            message_thread_id: newTopicId
+                        });
+                        return retryMessage.message_id;
+                    } catch (retryErr) {
+                        logger.error('❌ Retry failed after topic recreation:', retryErr);
+                        return null;
+                    }
+                }
+            } else {
+                logger.warn(`⚠️ Could not find WhatsApp JID for topic ID ${topicId}`);
+            }
         }
 
-        logger.error("❌ Failed to send message:", desc);
+        logger.error('❌ Failed to send message to Telegram:', desc);
         return null;
     }
 }
+
+
 
 
     async streamToBuffer(stream) {
@@ -2183,4 +2121,4 @@ async sendSimpleMessage(topicId, text, sender) {
     }
 }
 
-export default TelegramBridge;
+module.exports = TelegramBridge;
