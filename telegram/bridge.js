@@ -604,81 +604,8 @@ async sendStartMessage() {
             logger.debug('Failed to send typing presence:', error);
         }
     }
-async verifyTopicExists(topicId) {
-  const chatId = config.get('telegram.chatId');
-  
-  try {
-    // Send a probe message to the topic
-    const probe = await this.telegramBot.sendMessage(chatId, '\u200B', {
-      message_thread_id: topicId
-    });
-    
-    // Check where it actually went
-    const actualThreadId = probe.message_thread_id;
-    
-    // Delete the probe message
-    try {
-      await this.telegramBot.deleteMessage(chatId, probe.message_id);
-    } catch (e) {
-      // Ignore delete errors
-    }
-    
-    // If actualThreadId is undefined or different, topic was deleted
-    if (!actualThreadId || actualThreadId !== topicId) {
-      logger.warn(`Topic ${topicId} was deleted (message went to ${actualThreadId || 'General'})`);
-      return false;
-    }
-    
-    return true;
-  } catch (error) {
-    const desc = error.response?.body?.description || error.message || '';
-    logger.warn(`verifyTopicExists error: ${desc}`);
-    // On error, assume exists to be safe
-    return true;
-  }
-}
-     async recreateMissingTopics() {
-        try {
-            logger.info('🔄 Checking for missing topics...');
-            const toRecreate = [];
-            
-            for (const [jid, topicId] of this.chatMappings.entries()) {
-                const exists = await this.verifyTopicExists(topicId);
-                if (!exists) {
-                    logger.warn(`🗑️ Topic ${topicId} for ${jid} was deleted, will recreate...`);
-                    toRecreate.push(jid);
-                }
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            
-            for (const jid of toRecreate) {
-                this.chatMappings.delete(jid);
-                this.profilePicCache.delete(jid); // Clear profile pic cache
-                await this.collection.deleteOne({ 
-                    type: 'chat', 
-                    'data.whatsappJid': jid 
-                });
-                
-                const dummyMsg = {
-                    key: { 
-                        remoteJid: jid, 
-                        participant: jid.endsWith('@g.us') ? jid : jid 
-                    }
-                };
-                await this.getOrCreateTopic(jid, dummyMsg);
-                
-                logger.info(`✅ Recreated topic for ${jid}`);
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-            
-            if (toRecreate.length > 0) {
-                logger.info(`✅ Recreated ${toRecreate.length} missing topics`);
-            }
-            
-        } catch (error) {
-            logger.error('❌ Error recreating missing topics:', error);
-        }
-    }
+
+ 
 
    async syncMessage(whatsappMsg, text) {
     if (!this.telegramBot || !config.get('telegram.enabled')) return;
@@ -1031,21 +958,12 @@ normalizePhone(jid) {
     return phone;
 }
    async getOrCreateTopic(chatJid, whatsappMsg) {
-      // ✅ If topic already cached, verify it still exists
-  if (this.chatMappings.has(chatJid)) {
-    const cachedTopicId = this.chatMappings.get(chatJid);
-    const exists = await this.verifyTopicExists(cachedTopicId);
-    if (exists) {
-      return cachedTopicId;
+    // ✅ If topic already cached, return
+    if (this.chatMappings.has(chatJid)) {
+        return this.chatMappings.get(chatJid);
     }
-    // Topic was deleted - clean up and recreate
-    logger.warn(`Cached topic ${cachedTopicId} for ${chatJid} was deleted. Recreating...`);
-    this.chatMappings.delete(chatJid);
-    this.profilePicCache.delete(chatJid);
-    await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': chatJid });
-  }
 
-    // ✅ If another creation is in progress, wait for it
+ // ✅ If another creation is in progress, wait for it
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
@@ -1968,64 +1886,20 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         }
     }
 
-    async sendSimpleMessage(topicId, text, sender) {
-    const chatId = config.get('telegram.chatId');
-
-    try {
-        const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
-            message_thread_id: topicId
-        });
-        return sentMessage.message_id;
-
-    } catch (error) {
-        const desc = error.response?.data?.description || error.message;
-
-        if (desc.includes('message thread not found')) {
-            logger.warn(`🗑️ Topic ID ${topicId} for sender ${sender} is missing. Recreating...`);
-
-            // Find JID from topic ID
-            const jidEntry = [...this.chatMappings.entries()].find(([jid, tId]) => tId === topicId);
-            const jid = jidEntry?.[0];
-
-            if (jid) {
-                // Clean mapping
-                this.chatMappings.delete(jid);
-                this.profilePicCache.delete(jid);
-                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
-
-                // Recreate topic
-                const dummyMsg = {
-                    key: {
-                        remoteJid: jid,
-                        participant: jid.endsWith('@g.us') ? jid : jid
-                    }
-                };
-                const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
-
-                if (newTopicId) {
-                    // 🔁 RETRY original message
-                    try {
-                        const retryMessage = await this.telegramBot.sendMessage(chatId, text, {
-                            message_thread_id: newTopicId
-                        });
-                        return retryMessage.message_id;
-                    } catch (retryErr) {
-                        logger.error('❌ Retry failed after topic recreation:', retryErr);
-                        return null;
-                    }
-                }
-            } else {
-                logger.warn(`⚠️ Could not find WhatsApp JID for topic ID ${topicId}`);
-            }
-        }
-
-        logger.error('❌ Failed to send message to Telegram:', desc);
-        return null;
-    }
+async sendSimpleMessage(topicId, text, sender) {
+  const chatId = config.get('telegram.chatId');
+  
+  try {
+    const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
+      message_thread_id: topicId
+    });
+    return sentMessage.message_id;
+  } catch (error) {
+    const desc = error.response?.data?.description || error.message;
+    logger.error('Failed to send message to Telegram:', desc);
+    return null;
+  }
 }
-
-
-
 
     async streamToBuffer(stream) {
         const chunks = [];
