@@ -610,64 +610,82 @@ async sendStartMessage() {
    async syncMessage(whatsappMsg, text) {
     if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
-    // Resolve LID to PN for consistent mapping
-    let sender = whatsappMsg.key.remoteJid;
-    let participant = whatsappMsg.key.participant || sender;
-    
-    // Normalize to PN format
-    sender = await this.resolveToPN(sender);
-    participant = await this.resolveToPN(participant);
-    
+    const sender = whatsappMsg.key.remoteJid;
+    const participant = whatsappMsg.key.participant || sender;
     const isFromMe = whatsappMsg.key.fromMe;
-        
-        if (sender === 'status@broadcast') {
-            await this.handleStatusMessage(whatsappMsg, text);
-            return;
+    
+    logger.info(`[SYNC] ========== NEW MESSAGE ==========`);
+    logger.info(`[SYNC] From: ${sender}`);
+    logger.info(`[SYNC] Participant: ${participant}`);
+    logger.info(`[SYNC] FromMe: ${isFromMe}`);
+    logger.info(`[SYNC] Text: ${text?.substring(0, 50) || 'no text'}`);
+    
+    if (sender === 'status@broadcast') {
+        logger.info(`[SYNC] Status message detected, routing to handleStatusMessage`);
+        await this.handleStatusMessage(whatsappMsg, text);
+        return;
+    }
+    
+    if (isFromMe) {
+        const existingTopicId = this.chatMappings.get(sender);
+        logger.info(`[SYNC] Outgoing message - existing topic: ${existingTopicId || 'none'}`);
+        if (existingTopicId) {
+            await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
+        }
+        return;
+    }
+    
+    logger.info(`[SYNC] Creating user mapping for participant: ${participant}`);
+    await this.createUserMapping(participant, whatsappMsg);
+    
+    logger.info(`[SYNC] Getting or creating topic for sender: ${sender}`);
+    const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
+    logger.info(`[SYNC] Topic ID resolved: ${topicId}`);
+    
+    if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+        logger.info(`[SYNC] Handling video_note media for topic ${topicId}`);
+        await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
+    } else if (whatsappMsg.message?.imageMessage) {
+        logger.info(`[SYNC] Handling image media for topic ${topicId}`);
+        await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
+    } else if (whatsappMsg.message?.videoMessage) {
+        logger.info(`[SYNC] Handling video media for topic ${topicId}`);
+        await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
+    } else if (whatsappMsg.message?.audioMessage) {
+        logger.info(`[SYNC] Handling audio media for topic ${topicId}`);
+        await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
+    } else if (whatsappMsg.message?.documentMessage) {
+        logger.info(`[SYNC] Handling document media for topic ${topicId}`);
+        await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
+    } else if (whatsappMsg.message?.stickerMessage) {
+        logger.info(`[SYNC] Handling sticker media for topic ${topicId}`);
+        await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
+    } else if (whatsappMsg.message?.locationMessage) { 
+        logger.info(`[SYNC] Handling location for topic ${topicId}`);
+        await this.handleWhatsAppLocation(whatsappMsg, topicId);
+    } else if (whatsappMsg.message?.contactMessage) { 
+        logger.info(`[SYNC] Handling contact for topic ${topicId}`);
+        await this.handleWhatsAppContact(whatsappMsg, topicId);
+    } else if (text) {
+        let messageText = text;
+        if (sender.endsWith('@g.us') && participant !== sender) {
+            const senderPhone = participant.split('@')[0];
+            const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+            messageText = `👤 ${senderName}:\n${text}`;
+            logger.info(`[SYNC] Group message from ${senderName}, formatted text`);
         }
         
-        if (isFromMe) {
-            const existingTopicId = this.chatMappings.get(sender);
-            if (existingTopicId) {
-                await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
-            }
-            return;
-        }
-        
-        await this.createUserMapping(participant, whatsappMsg);
-        const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
-        
-        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
-        } else if (whatsappMsg.message?.imageMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
-        } else if (whatsappMsg.message?.videoMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
-        } else if (whatsappMsg.message?.audioMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
-        } else if (whatsappMsg.message?.documentMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
-        } else if (whatsappMsg.message?.stickerMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
-        } else if (whatsappMsg.message?.locationMessage) { 
-            await this.handleWhatsAppLocation(whatsappMsg, topicId);
-        } else if (whatsappMsg.message?.contactMessage) { 
-            await this.handleWhatsAppContact(whatsappMsg, topicId);
-        } else if (text) {
-            let messageText = text;
-            if (sender.endsWith('@g.us') && participant !== sender) {
-                const senderPhone = participant.split('@')[0];
-                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-                messageText = `👤 ${senderName}:\n${text}`;
-            }
-            
-            await this.sendSimpleMessage(topicId, messageText, sender);
-        }
-
-        if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
-            this.queueMessageForReadReceipt(sender, whatsappMsg.key);
-        }
+        logger.info(`[SYNC] Sending simple message to topic ${topicId}`);
+        await this.sendSimpleMessage(topicId, messageText, sender);
     }
 
+    if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
+        logger.info(`[SYNC] Queueing read receipt for message ${whatsappMsg.key.id}`);
+        this.queueMessageForReadReceipt(sender, whatsappMsg.key);
+    }
+    
+    logger.info(`[SYNC] ========== MESSAGE SYNCED ==========`);
+}
 async handleStatusMessage(whatsappMsg, text) {
     try {
         if (!config.get('telegram.features.statusSync')) return;
@@ -1889,14 +1907,22 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 async sendSimpleMessage(topicId, text, sender) {
   const chatId = config.get('telegram.chatId');
   
+  logger.info(`[SEND] Sending to chat ${chatId}, topic ${topicId}`);
+  logger.info(`[SEND] Message text: ${text?.substring(0, 100)}`);
+  
   try {
     const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
       message_thread_id: topicId
     });
+    
+    logger.info(`[SEND] ✅ Message sent successfully`);
+    logger.info(`[SEND] Sent message ID: ${sentMessage.message_id}`);
+    logger.info(`[SEND] Message actually went to thread: ${sentMessage.message_thread_id || 'General (undefined)'}`);
+    
     return sentMessage.message_id;
   } catch (error) {
     const desc = error.response?.data?.description || error.message;
-    logger.error('Failed to send message to Telegram:', desc);
+    logger.error(`[SEND] ❌ Failed to send message: ${desc}`);
     return null;
   }
 }
