@@ -303,12 +303,19 @@ setupEnhancedEventHandlers(saveCreds) {
     }
 
     if (this.telegramBridge) {
-        try {
-            await this.telegramBridge.syncWhatsAppConnection();
-        } catch (err) {
-            logger.warn('⚠️ Telegram sync error:', err.message);
-        }
-    }
+  try {
+    // Wait a bit for WhatsApp to sync contacts
+    setTimeout(async () => {
+      try {
+        await this.telegramBridge.syncWhatsAppConnection();
+      } catch (err) {
+        logger.warn('⚠️ Telegram sync error:', err.message);
+      }
+    }, 3000); // Wait 3 seconds for contacts to load
+  } catch (err) {
+    logger.warn('⚠️ Telegram sync setup error:', err.message);
+  }
+}
 }
 
     async sendStartupMessage() {
