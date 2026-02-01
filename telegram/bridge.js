@@ -996,21 +996,36 @@ normalizePhone(jid) {
                     topicName = `Group Chat`;
                 }
                 iconColor = 0x6FB9F0;
-                 } else {
+                } else {
   let phone = chatJid.split('@')[0];
+  let normalizedPhone = phone;
+  
   // Remove device suffix if present (e.g., "123456:0" -> "123456")
-  if (phone.includes(':')) {
-    phone = phone.split(':')[0];
+  if (normalizedPhone.includes(':')) {
+    normalizedPhone = normalizedPhone.split(':')[0];
   }
   
-  logger.info(`[TOPIC] Creating topic for phone: ${phone}`);
+  logger.info(`[TOPIC] Creating topic for JID: ${chatJid}`);
+  logger.info(`[TOPIC] Extracted phone: ${phone}`);
+  logger.info(`[TOPIC] Normalized phone: ${normalizedPhone}`);
   logger.info(`[TOPIC] Total contacts in memory: ${this.contactMappings.size}`);
   
-  const contactName = this.contactMappings.get(phone);
+  // Try multiple lookup variations
+  let contactName = this.contactMappings.get(normalizedPhone);
+  if (!contactName) {
+    contactName = this.contactMappings.get(phone); // Try with device suffix
+  }
+  
+  // Debug: Show sample contact keys for comparison
+  if (!contactName && this.contactMappings.size > 0) {
+    const sampleKeys = Array.from(this.contactMappings.keys()).slice(0, 5);
+    logger.debug(`[TOPIC] Sample contact keys: ${sampleKeys.join(', ')}`);
+  }
+  
   logger.info(`[TOPIC] Contact lookup result: ${contactName || 'NOT FOUND'}`);
   
   // Use contact name if saved, otherwise just phone number
-  topicName = contactName ? contactName : `+${phone}`;
+  topicName = contactName ? contactName : `+${normalizedPhone}`;
   logger.info(`[TOPIC] Final topic name: ${topicName}`);
 }
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
