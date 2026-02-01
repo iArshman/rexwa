@@ -604,42 +604,38 @@ async sendStartMessage() {
             logger.debug('Failed to send typing presence:', error);
         }
     }
-
-    async verifyTopicExists(topicId) {
-    // Skip if recently verified (within 5 minutes)
-    const cacheKey = `topic_${topicId}`;
-    const cached = this.topicVerificationCache.get(cacheKey);
-    if (cached && Date.now() - cached < 300000) {
-        return true;
-    }
-
-    const chatId = config.get('telegram.chatId');
+async verifyTopicExists(topicId) {
+  const chatId = config.get('telegram.chatId');
+  
+  try {
+    // Send a probe message to the topic
+    const probe = await this.telegramBot.sendMessage(chatId, '\u200B', {
+      message_thread_id: topicId
+    });
     
+    // Check where it actually went
+    const actualThreadId = probe.message_thread_id;
+    
+    // Delete the probe message
     try {
-        // Try to send a test message to the topic
-        await this.telegramBot.sendMessage(chatId, '🔍', {
-            message_thread_id: topicId
-        });
-        
-        // If successful, delete the test message
-        // Note: We can't easily delete it, so we'll just cache the result
-        this.topicVerificationCache.set(cacheKey, Date.now());
-        return true;
-    } catch (error) {
-        const desc = error.response?.data?.description || error.message;
-        
-        if (desc.includes('message thread not found') || 
-            desc.includes('TOPIC_DELETED') ||
-            desc.includes('TOPIC_CLOSED')) {
-            logger.debug(`🗑️ Topic ${topicId} does not exist`);
-            this.topicVerificationCache.delete(cacheKey);
-            return false;
-        }
-        
-        // Other errors - assume topic exists to avoid unnecessary recreation
-        logger.warn(`⚠️ Could not verify topic ${topicId}: ${desc}`);
-        return true;
+      await this.telegramBot.deleteMessage(chatId, probe.message_id);
+    } catch (e) {
+      // Ignore delete errors
     }
+    
+    // If actualThreadId is undefined or different, topic was deleted
+    if (!actualThreadId || actualThreadId !== topicId) {
+      logger.warn(`Topic ${topicId} was deleted (message went to ${actualThreadId || 'General'})`);
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    const desc = error.response?.body?.description || error.message || '';
+    logger.warn(`verifyTopicExists error: ${desc}`);
+    // On error, assume exists to be safe
+    return true;
+  }
 }
      async recreateMissingTopics() {
         try {
