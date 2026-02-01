@@ -1919,6 +1919,25 @@ async sendSimpleMessage(topicId, text, sender) {
     logger.info(`[SEND] Sent message ID: ${sentMessage.message_id}`);
     logger.info(`[SEND] Message actually went to thread: ${sentMessage.message_thread_id || 'General (undefined)'}`);
     
+    // CHECK IF TOPIC WAS DELETED - Telegram redirects to General
+    if (!sentMessage.message_thread_id || sentMessage.message_thread_id !== topicId) {
+      logger.warn(`[SEND] ⚠️ Topic ${topicId} was deleted! Message went to ${sentMessage.message_thread_id || 'General'}. Clearing cache...`);
+      
+      // Clear cache for this chat
+      for (const [jid, cachedTopicId] of this.chatMappings.entries()) {
+        if (cachedTopicId === topicId) {
+          logger.info(`[SEND] Removing cached mapping: ${jid} -> ${topicId}`);
+          this.chatMappings.delete(jid);
+          this.profilePicCache.delete(jid);
+          // Clear from database
+          await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
+          break;
+        }
+      }
+      
+      logger.info(`[SEND] Cache cleared. Next message will create a new topic.`);
+    }
+    
     return sentMessage.message_id;
   } catch (error) {
     const desc = error.response?.data?.description || error.message;
@@ -1926,7 +1945,6 @@ async sendSimpleMessage(topicId, text, sender) {
     return null;
   }
 }
-
     async streamToBuffer(stream) {
         const chunks = [];
         for await (const chunk of stream) {
