@@ -2014,6 +2014,50 @@ async sendSimpleMessage(topicId, text, sender) {
     return null;
   }
 }
+
+    subscribeToWhatsAppEvents() {
+    if (!this.whatsappBot?.sock) {
+        logger.warn('Cannot subscribe to WhatsApp events - socket not available');
+        return;
+    }
+    
+    const sock = this.whatsappBot.sock;
+    
+    // Listen for messaging history (contains contacts)
+    sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
+        logger.info(`Received history sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} messages`);
+        
+        if (contacts && contacts.length > 0) {
+            logger.info(`Processing ${contacts.length} contacts from history sync...`);
+            
+            let syncedCount = 0;
+            for (const contact of contacts) {
+                if (!contact.id || contact.id === 'status@broadcast') continue;
+                
+                const phone = contact.id.split('@')[0].split(':')[0];
+                let contactName = contact.name || contact.notify || contact.verifiedName;
+                
+                if (contactName && contactName !== phone && !contactName.startsWith('+')) {
+                    this.saveContactMapping(phone, contactName).catch(err => {
+                        logger.error(`Failed to save contact ${phone}:`, err);
+                    });
+                    syncedCount++;
+                }
+            }
+            
+            logger.info(`Synced ${syncedCount} contacts from history`);
+            
+            // Update topic names after contacts are synced
+            setTimeout(() => {
+                this.updateTopicNames().catch(err => {
+                    logger.error('Failed to update topic names:', err);
+                });
+            }, 1000);
+        }
+    });
+    
+    logger.info('Subscribed to WhatsApp messaging-history.set event');
+}
     async streamToBuffer(stream) {
         const chunks = [];
         for await (const chunk of stream) {
@@ -2041,18 +2085,21 @@ async sendSimpleMessage(topicId, text, sender) {
                '';
     }
 
-    async syncWhatsAppConnection() {
-        if (!this.telegramBot) return;
-
-        await this.logToTelegram('🤖 HyperWa Bot Connected', 
-            `✅ Bot: ${config.get('bot.name')} v${config.get('bot.version')}\n` +
-            `📱 WhatsApp: Connected\n` +
-            `🔗 Telegram Bridge: Active\n` +
-            `📞 Contacts: ${this.contactMappings.size} synced\n` +
-            `🚀 Ready to bridge messages!`);
-
+async syncWhatsAppConnection() {
+    try {
+        logger.info(`WhatsApp Connected: ${this.whatsappBot.sock.user?.id || 'Unknown'}`);
+        logger.info(`Existing contacts in memory: ${this.contactMappings.size}`);
+        
+        // Subscribe to events to receive contacts
+        this.subscribeToWhatsAppEvents();
+        
         await this.syncContacts();
+        
+        logger.info(`Total contacts after sync: ${this.contactMappings.size}`);
+    } catch (error) {
+        logger.error('Error in syncWhatsAppConnection:', error);
     }
+}
 
     async setupWhatsAppHandlers() {
         if (!this.whatsappBot?.sock) {
