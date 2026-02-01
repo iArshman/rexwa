@@ -996,17 +996,23 @@ normalizePhone(jid) {
                     topicName = `Group Chat`;
                 }
                 iconColor = 0x6FB9F0;
-                  } else {
-        let phone = chatJid.split('@')[0];
-        // Remove device suffix if present (e.g., "123456:0" -> "123456")
-        if (phone.includes(':')) {
-          phone = phone.split(':')[0];
-        }
-        const contactName = this.contactMappings.get(phone);
-        // Use contact name if saved, otherwise just phone number
-        topicName = contactName ? contactName : `+${phone}`;
-      }
-
+                 } else {
+  let phone = chatJid.split('@')[0];
+  // Remove device suffix if present (e.g., "123456:0" -> "123456")
+  if (phone.includes(':')) {
+    phone = phone.split(':')[0];
+  }
+  
+  logger.info(`[TOPIC] Creating topic for phone: ${phone}`);
+  logger.info(`[TOPIC] Total contacts in memory: ${this.contactMappings.size}`);
+  
+  const contactName = this.contactMappings.get(phone);
+  logger.info(`[TOPIC] Contact lookup result: ${contactName || 'NOT FOUND'}`);
+  
+  // Use contact name if saved, otherwise just phone number
+  topicName = contactName ? contactName : `+${phone}`;
+  logger.info(`[TOPIC] Final topic name: ${topicName}`);
+}
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
