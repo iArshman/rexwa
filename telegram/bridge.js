@@ -263,57 +263,88 @@ async clearFilters() {
         }
     }
 
-    async syncContacts() {
-        try {
-            if (!this.whatsappBot?.sock?.user) {
-                logger.warn('⚠️ WhatsApp not connected, skipping contact sync');
-                return;
-            }
-            
-            logger.info('📞 Syncing contacts from WhatsApp...');
-            
-            const contacts = this.whatsappBot.sock.store?.contacts || {};
-            const contactEntries = Object.entries(contacts);
-            
-            logger.debug(`🔍 Found ${contactEntries.length} contacts in WhatsApp store`);
-            
-            let syncedCount = 0;
-            
-            for (const [jid, contact] of contactEntries) {
-                if (!jid || jid === 'status@broadcast' || !contact) continue;
-                
-                const phone = jid.split('@')[0];
-                let contactName = null;
-                
-                // Extract name from contact - prioritize saved contact name
-                if (contact.name && contact.name !== phone && !contact.name.startsWith('+') && contact.name.length > 2) {
-                    contactName = contact.name;
-                } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+') && contact.notify.length > 2) {
-                    contactName = contact.notify;
-                } else if (contact.verifiedName && contact.verifiedName !== phone && contact.verifiedName.length > 2) {
-                    contactName = contact.verifiedName;
-                }
-                
-                if (contactName) {
-                    const existingName = this.contactMappings.get(phone);
-                    if (existingName !== contactName) {
-                        await this.saveContactMapping(phone, contactName);
-                        syncedCount++;
-                        logger.debug(`📞 Synced contact: ${phone} -> ${contactName}`);
-                    }
-                }
-            }
-            
-            logger.info(`✅ Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
-            
-            if (syncedCount > 0) {
-                await this.updateTopicNames();
-            }
-            
-        } catch (error) {
-            logger.error('❌ Failed to sync contacts:', error);
+   async syncContacts() {
+    try {
+        if (!this.whatsappBot?.sock?.user) {
+            logger.warn('WhatsApp not connected, skipping contact sync');
+            return;
         }
+        
+        logger.info('Syncing contacts from WhatsApp...');
+        
+        let syncedCount = 0;
+        
+        // Method 1: Get from store.contacts
+        const contacts = this.whatsappBot.sock.store?.contacts || {};
+        logger.debug(`Found ${Object.keys(contacts).length} contacts in store.contacts`);
+        
+        for (const [jid, contact] of Object.entries(contacts)) {
+            if (!jid || jid === 'status@broadcast' || !contact) continue;
+            
+            const phone = jid.split('@')[0].split(':')[0]; // Remove device suffix
+            let contactName = null;
+            
+            // Extract name from contact - prioritize saved contact name
+            if (contact.name && contact.name !== phone && !contact.name.startsWith('+') && contact.name.length > 2) {
+                contactName = contact.name;
+            } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+') && contact.notify.length > 2) {
+                contactName = contact.notify;
+            } else if (contact.verifiedName && contact.verifiedName !== phone && contact.verifiedName.length > 2) {
+                contactName = contact.verifiedName;
+            }
+            
+            if (contactName) {
+                const existingName = this.contactMappings.get(phone);
+                if (existingName !== contactName) {
+                    await this.saveContactMapping(phone, contactName);
+                    syncedCount++;
+                    logger.debug(`Synced contact: ${phone} -> ${contactName}`);
+                }
+            }
+        }
+        
+        // Method 2: Get from store.chats (this is more reliable)
+        const chats = this.whatsappBot.sock.store?.chats || {};
+        logger.debug(`Found ${Object.keys(chats).length} chats in store.chats`);
+        
+        for (const [jid, chat] of Object.entries(chats)) {
+            if (!jid || jid === 'status@broadcast' || !chat) continue;
+            
+            // Only process private chats (not groups)
+            if (!jid.endsWith('@s.whatsapp.net')) continue;
+            
+            const phone = jid.split('@')[0].split(':')[0]; // Remove device suffix
+            let contactName = null;
+            
+            // Extract name from chat
+            if (chat.name && chat.name !== phone && !chat.name.startsWith('+') && chat.name.length > 2) {
+                contactName = chat.name;
+            } else if (chat.notify && chat.notify !== phone && !chat.notify.startsWith('+') && chat.notify.length > 2) {
+                contactName = chat.notify;
+            } else if (chat.verifiedName && chat.verifiedName !== phone && chat.verifiedName.length > 2) {
+                contactName = chat.verifiedName;
+            }
+            
+            if (contactName) {
+                const existingName = this.contactMappings.get(phone);
+                if (existingName !== contactName) {
+                    await this.saveContactMapping(phone, contactName);
+                    syncedCount++;
+                    logger.debug(`Synced contact from chat: ${phone} -> ${contactName}`);
+                }
+            }
+        }
+        
+        logger.info(`Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
+        
+        if (syncedCount > 0) {
+            await this.updateTopicNames();
+        }
+        
+    } catch (error) {
+        logger.error('Error syncing contacts:', error);
     }
+}
 
     async updateTopicNames() {
         try {
