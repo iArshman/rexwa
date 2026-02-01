@@ -263,86 +263,114 @@ async clearFilters() {
         }
     }
 
-   async syncContacts() {
+async syncContacts() {
     try {
+        logger.info('======== SYNC CONTACTS STARTED ========');
+        
         if (!this.whatsappBot?.sock?.user) {
             logger.warn('WhatsApp not connected, skipping contact sync');
             return;
         }
         
-        logger.info('Syncing contacts from WhatsApp...');
+        logger.info(`WhatsApp user: ${this.whatsappBot.sock.user.id}`);
+        
+        // Check what's available in the store
+        const hasStore = !!this.whatsappBot.sock.store;
+        const hasContacts = !!this.whatsappBot.sock.store?.contacts;
+        const hasChats = !!this.whatsappBot.sock.store?.chats;
+        
+        logger.info(`Store exists: ${hasStore}`);
+        logger.info(`Store.contacts exists: ${hasContacts}`);
+        logger.info(`Store.chats exists: ${hasChats}`);
+        
+        if (!hasStore) {
+            logger.error('No store available on WhatsApp socket');
+            return;
+        }
         
         let syncedCount = 0;
         
-        // Method 1: Get from store.contacts
-        const contacts = this.whatsappBot.sock.store?.contacts || {};
-        logger.debug(`Found ${Object.keys(contacts).length} contacts in store.contacts`);
-        
-        for (const [jid, contact] of Object.entries(contacts)) {
-            if (!jid || jid === 'status@broadcast' || !contact) continue;
+        // Method 1: Check store.contacts
+        if (hasContacts) {
+            const contacts = this.whatsappBot.sock.store.contacts;
+            const contactKeys = Object.keys(contacts);
+            logger.info(`Found ${contactKeys.length} entries in store.contacts`);
             
-            const phone = jid.split('@')[0].split(':')[0]; // Remove device suffix
-            let contactName = null;
-            
-            // Extract name from contact - prioritize saved contact name
-            if (contact.name && contact.name !== phone && !contact.name.startsWith('+') && contact.name.length > 2) {
-                contactName = contact.name;
-            } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+') && contact.notify.length > 2) {
-                contactName = contact.notify;
-            } else if (contact.verifiedName && contact.verifiedName !== phone && contact.verifiedName.length > 2) {
-                contactName = contact.verifiedName;
-            }
-            
-            if (contactName) {
-                const existingName = this.contactMappings.get(phone);
-                if (existingName !== contactName) {
-                    await this.saveContactMapping(phone, contactName);
-                    syncedCount++;
-                    logger.debug(`Synced contact: ${phone} -> ${contactName}`);
+            if (contactKeys.length > 0) {
+                logger.debug(`Sample contacts: ${contactKeys.slice(0, 5).join(', ')}`);
+                
+                for (const [jid, contact] of Object.entries(contacts)) {
+                    if (!jid || jid === 'status@broadcast') continue;
+                    
+                    logger.debug(`Processing contact: ${jid}`);
+                    logger.debug(`Contact data: ${JSON.stringify(contact)}`);
+                    
+                    const phone = jid.split('@')[0].split(':')[0];
+                    let contactName = null;
+                    
+                    if (contact.name) contactName = contact.name;
+                    else if (contact.notify) contactName = contact.notify;
+                    else if (contact.verifiedName) contactName = contact.verifiedName;
+                    
+                    logger.debug(`Extracted - Phone: ${phone}, Name: ${contactName}`);
+                    
+                    if (contactName && contactName !== phone && !contactName.startsWith('+')) {
+                        await this.saveContactMapping(phone, contactName);
+                        syncedCount++;
+                        logger.info(`Saved: ${phone} -> ${contactName}`);
+                    }
                 }
+            } else {
+                logger.warn('store.contacts is empty');
             }
         }
         
-        // Method 2: Get from store.chats (this is more reliable)
-        const chats = this.whatsappBot.sock.store?.chats || {};
-        logger.debug(`Found ${Object.keys(chats).length} chats in store.chats`);
-        
-        for (const [jid, chat] of Object.entries(chats)) {
-            if (!jid || jid === 'status@broadcast' || !chat) continue;
+        // Method 2: Check store.chats
+        if (hasChats) {
+            const chats = this.whatsappBot.sock.store.chats;
+            const chatKeys = Object.keys(chats);
+            logger.info(`Found ${chatKeys.length} entries in store.chats`);
             
-            // Only process private chats (not groups)
-            if (!jid.endsWith('@s.whatsapp.net')) continue;
-            
-            const phone = jid.split('@')[0].split(':')[0]; // Remove device suffix
-            let contactName = null;
-            
-            // Extract name from chat
-            if (chat.name && chat.name !== phone && !chat.name.startsWith('+') && chat.name.length > 2) {
-                contactName = chat.name;
-            } else if (chat.notify && chat.notify !== phone && !chat.notify.startsWith('+') && chat.notify.length > 2) {
-                contactName = chat.notify;
-            } else if (chat.verifiedName && chat.verifiedName !== phone && chat.verifiedName.length > 2) {
-                contactName = chat.verifiedName;
-            }
-            
-            if (contactName) {
-                const existingName = this.contactMappings.get(phone);
-                if (existingName !== contactName) {
-                    await this.saveContactMapping(phone, contactName);
-                    syncedCount++;
-                    logger.debug(`Synced contact from chat: ${phone} -> ${contactName}`);
+            if (chatKeys.length > 0) {
+                logger.debug(`Sample chats: ${chatKeys.slice(0, 5).join(', ')}`);
+                
+                for (const [jid, chat] of Object.entries(chats)) {
+                    if (!jid || jid === 'status@broadcast') continue;
+                    if (!jid.endsWith('@s.whatsapp.net')) {
+                        logger.debug(`Skipping group: ${jid}`);
+                        continue;
+                    }
+                    
+                    logger.debug(`Processing chat: ${jid}`);
+                    logger.debug(`Chat data: ${JSON.stringify(chat)}`);
+                    
+                    const phone = jid.split('@')[0].split(':')[0];
+                    let contactName = null;
+                    
+                    if (chat.name) contactName = chat.name;
+                    else if (chat.notify) contactName = chat.notify;
+                    else if (chat.verifiedName) contactName = chat.verifiedName;
+                    
+                    logger.debug(`Extracted - Phone: ${phone}, Name: ${contactName}`);
+                    
+                    if (contactName && contactName !== phone && !contactName.startsWith('+')) {
+                        await this.saveContactMapping(phone, contactName);
+                        syncedCount++;
+                        logger.info(`Saved from chat: ${phone} -> ${contactName}`);
+                    }
                 }
+            } else {
+                logger.warn('store.chats is empty');
             }
         }
         
-        logger.info(`Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
-        
-        if (syncedCount > 0) {
-            await this.updateTopicNames();
-        }
+        logger.info(`Synced ${syncedCount} new/updated contacts`);
+        logger.info(`Total contacts in memory: ${this.contactMappings.size}`);
+        logger.info('======== SYNC CONTACTS FINISHED ========');
         
     } catch (error) {
         logger.error('Error syncing contacts:', error);
+        logger.error('Stack:', error.stack);
     }
 }
 
